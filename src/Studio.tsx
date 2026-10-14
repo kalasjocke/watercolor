@@ -216,7 +216,7 @@ export function Studio(props: StudioProps) {
               onConnect={c => connect(c.source, c.target)} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection}
               onReconnect={onReconnect} onReconnectStart={(_, edge) => { reconnecting.current = edge.id; }} onReconnectEnd={() => { reconnecting.current = null; }}
               onMoveStart={() => setDropMenu(null)} onMoveEnd={(_, next) => setViewport(next)}
-              snapToGrid snapGrid={snapGrid} deleteKeyCode={null} minZoom={0.1} maxZoom={2.5} attributionPosition="bottom-center">
+              snapToGrid snapGrid={snapGrid} deleteKeyCode={null} minZoom={0.1} maxZoom={2.5} proOptions={{ hideAttribution: true }}>
               <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} color="#c9ced6" />
               <CanvasControls />
             </ReactFlow>
