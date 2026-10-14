@@ -38,3 +38,7 @@ A prompt step reaches the processor only when Generate is pressed (`appliedPromp
 - `src/useDocument.ts`: graph state with undo and redo.
 - `src/Studio.tsx`: canvas, import, keyboard shortcuts and autosave.
 - `src/components/`: node card, edge, inspector, toolbar, menus and viewer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
