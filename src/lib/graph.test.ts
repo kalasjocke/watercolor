@@ -4,7 +4,7 @@ import {
   referencedAssets, removeItems, resolveNodes, serializeProject, settingsKey, snapPosition, stepLabel, switchPreset, updateStep,
   validateConnection, type Asset, type Graph, type Run, type Runs, type Step,
 } from './graph';
-import { defaultSettings } from './presets';
+import { changedSettings, defaultSettings } from './presets';
 
 const asset: Asset = { id: 'asset-1', blob: new Blob(), filename: 'forest.jpg', width: 1200, height: 800 };
 
@@ -192,6 +192,14 @@ describe('steps', () => {
     expect(settingsKey({ ...step, name: 'Bold' })).toBe(settingsKey(step));
     expect(settingsKey(switchPreset(step, 'sumie'))).not.toBe(settingsKey(step));
     expect(settingsKey(newPromptStep('Remove the car '))).toBe(settingsKey(newPromptStep('Remove the car')));
+  });
+  it('lists only the settings that differ from the preset defaults', () => {
+    const step = newStyleStep('watercolor');
+    expect(changedSettings(step)).toEqual([]);
+    const defaults = defaultSettings('watercolor');
+    const tuned = { ...step, settings: { watercolor: { values: { ...defaults.values, detail: 80, warmth: 10 }, preserve: { ...defaults.preserve, faces: false, colors: true } } } };
+    expect(changedSettings(tuned)).toEqual(['Detail 80', 'Light warmth 10', 'Faces not kept', 'Original colors kept']);
+    expect(changedSettings(switchPreset(tuned, 'sumie'))).toEqual([]);
   });
   it('labels steps from their name, prompt or preset', () => {
     expect(stepLabel(newPromptStep())).toBe('New prompt');

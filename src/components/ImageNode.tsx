@@ -2,6 +2,7 @@ import { useRef, useState, type MouseEvent } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import { useCanvas } from '../canvas-context';
 import { kindLabels, type ImageNode, type NodeStatus } from '../lib/graph';
+import { changedSettings } from '../lib/presets';
 import { Icon } from './Icons';
 import { MenuButton, type MenuItem } from './Menu';
 
@@ -21,6 +22,7 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
   const status = nodes.get(id) ?? { stale: false, ready: false, pending: false, hasInput: false, canRun: false };
   const asset = status.assetId ? assets.get(status.assetId) : undefined;
   const edge = incoming.get(id);
+  const changed = edge?.data.kind === 'style' ? changedSettings(edge.data) : [];
   const blockerName = status.blockedBy ? flow.getNode(status.blockedBy)?.data.name : undefined;
   const [renaming, setRenaming] = useState(false);
   const cancelRename = useRef(false);
@@ -74,10 +76,7 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
           <span className={`badge ${data.kind}`}>{kindLabels[data.kind]}</span>
           <span>{asset ? `${asset.width} × ${asset.height}` : 'No image'}</span>
         </div>
-        <div className="card-actions">
-          <button className="small-button nodrag" onClick={run(() => actions.createStep(id, 'prompt'))}>Edit with prompt</button>
-          <button className="small-button nodrag" onClick={run(() => actions.createStep(id, 'style'))}>Create variation</button>
-        </div>
+        {changed.length > 0 && <ul className="card-settings" aria-label="Changed settings">{changed.map(label => <li key={label}>{label}</li>)}</ul>}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>

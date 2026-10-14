@@ -142,10 +142,9 @@ function NodeInspector({ graph, node, history }: { graph: Graph; node: ImageNode
           : 'Not connected'}</dd></>}
       </dl>
       <div className="button-stack">
-        <button className="primary-button" onClick={() => actions.createStep(node.id, 'prompt')}><Icon name="prompt" />Edit with prompt</button>
+        <button className="secondary-button" onClick={() => actions.createStep(node.id, 'prompt')}><Icon name="prompt" />Edit with prompt</button>
         <button className="secondary-button" onClick={() => actions.createStep(node.id, 'style')}><Icon name="style" />Create variation</button>
         {input && <button className="secondary-button" onClick={() => actions.duplicateStep(node.id)}>Duplicate step</button>}
-        {asset && <button className="secondary-button" onClick={() => actions.openViewer(node.id)}><Icon name="eye" />View larger</button>}
         <button className="danger-button" onClick={() => actions.deleteNode(node.id)}>Delete</button>
       </div>
     </div>

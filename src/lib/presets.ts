@@ -37,3 +37,12 @@ export function stylePrompt(recipe: Recipe): string {
   const keep = (Object.keys(preserveText) as PreserveKey[]).filter(key => settings.preserve[key]).map(key => preserveText[key]);
   return [preset.prompt, '', 'Settings:', ...lines, ...(keep.length ? ['', `Keep ${keep.join(', ')}.`] : [])].join('\n');
 }
+
+// Settings that differ from the preset's defaults, as short labels such as "Detail 80" or "Faces not kept".
+export function changedSettings(recipe: Recipe): string[] {
+  const preset = presets[recipe.preset], current = getSettings(recipe), defaults = defaultSettings(recipe.preset);
+  const values = [...sharedControls, ...preset.controls].filter(c => current.values[c.key] !== defaults.values[c.key]).map(c => `${c.label} ${current.values[c.key]}`);
+  const preserve = (Object.keys(preserveLabels) as PreserveKey[]).filter(key => current.preserve[key] !== defaults.preserve[key])
+    .map(key => `${preserveLabels[key]} ${current.preserve[key] ? 'kept' : 'not kept'}`);
+  return [...values, ...preserve];
+}
