@@ -1,13 +1,16 @@
 import type { Edge, Node, Viewport, XYPosition } from '@xyflow/react';
+import { defaultAdjust, isIdentity, type AdjustValues } from './adjust';
 import { defaultSettings, newRecipe, presets, type PresetId, type Recipe } from './presets';
 
-export type NodeKind = 'original' | 'edit' | 'variation';
+export type NodeKind = 'original' | 'edit' | 'variation' | 'adjusted';
 export type ImageData = { name: string; kind: NodeKind; assetId?: string };
 export type ImageNode = Node<ImageData, 'image'>;
 // `pickedRunId` names the run whose image is the step's output. Picking is part of undo history.
 export type PromptStep = { kind: 'prompt'; name: string; prompt: string; pickedRunId?: string };
 export type StyleStep = { kind: 'style'; pickedRunId?: string } & Recipe;
-export type Step = PromptStep | StyleStep;
+// Adjust steps run in the browser as their settings change, so they have no runs.
+export type AdjustStep = { kind: 'adjust'; name: string; values: AdjustValues; pickedRunId?: string };
+export type Step = PromptStep | StyleStep | AdjustStep;
 export type StepEdge = Edge<Step, 'step'> & { data: Step };
 export type Asset = { id: string; blob: Blob; filename: string; width: number; height: number };
 export type Graph = { nodes: ImageNode[]; edges: StepEdge[]; name: string };
@@ -18,7 +21,7 @@ export type Project = Graph & { version: 1; viewport: Viewport; runs?: Runs };
 
 export const emptyGraph = (): Graph => ({ name: 'Untitled journey', nodes: [], edges: [] });
 export const initialViewport: Viewport = { x: 80, y: 80, zoom: 0.9 };
-export const kindLabels: Record<NodeKind, string> = { original: 'Original', edit: 'Edit', variation: 'Variation' };
+export const kindLabels: Record<NodeKind, string> = { original: 'Original', edit: 'Edit', variation: 'Variation', adjusted: 'Adjusted' };
 
 export const newPromptStep = (prompt = ''): PromptStep => ({ kind: 'prompt', name: '', prompt });
 // An empty name means the badge follows the preset, so switching styles keeps the label accurate.
@@ -26,12 +29,16 @@ export const newStyleStep = (preset: PresetId = 'watercolor'): StyleStep => ({ k
 export function switchPreset(step: StyleStep, preset: PresetId): StyleStep {
   return { ...step, preset, settings: { ...step.settings, [preset]: step.settings[preset] ?? defaultSettings(preset) } };
 }
-export const outputKind = (step: Step['kind']): NodeKind => step === 'prompt' ? 'edit' : 'variation';
-export const stepKindFor = (kind: NodeKind): Step['kind'] | undefined => kind === 'edit' ? 'prompt' : kind === 'variation' ? 'style' : undefined;
+export const newAdjustStep = (): AdjustStep => ({ kind: 'adjust', name: '', values: defaultAdjust() });
+export const newStep = (kind: Step['kind']): Step => kind === 'prompt' ? newPromptStep() : kind === 'style' ? newStyleStep() : newAdjustStep();
+const outputKinds: Record<Step['kind'], NodeKind> = { prompt: 'edit', style: 'variation', adjust: 'adjusted' };
+export const outputKind = (step: Step['kind']): NodeKind => outputKinds[step];
+export const stepKindFor = (kind: NodeKind): Step['kind'] | undefined => (Object.keys(outputKinds) as Step['kind'][]).find(k => outputKinds[k] === kind);
 
 export function stepLabel(step: Step): string {
   if (step.name.trim()) return step.name.trim();
   if (step.kind === 'style') return presets[step.preset].short;
+  if (step.kind === 'adjust') return 'Adjust';
   const words = step.prompt.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return 'New prompt';
   return words.length > 4 ? `${words.slice(0, 4).join(' ')}…` : words.join(' ');
@@ -43,7 +50,7 @@ export function validateConnection(graph: Graph, source: string, target: string,
   if (!graph.nodes.some(n => n.id === source) || !targetNode) return 'Choose two existing image nodes.';
   if (targetNode.data.kind === 'original') return 'Original photos cannot receive processing steps.';
   if (options.kind && outputKind(options.kind) !== targetNode.data.kind) {
-    return options.kind === 'prompt' ? 'A prompt step must lead to an edit node.' : 'A style step must lead to a variation node.';
+    return { prompt: 'A prompt step must lead to an edit node.', style: 'A style step must lead to a variation node.', adjust: 'An adjust step must lead to an adjusted node.' }[options.kind];
   }
   const edges = graph.edges.filter(e => e.id !== options.replacing);
   if (edges.some(e => e.target === target)) return 'Each image can have only one input. Create another branch instead.';
@@ -66,8 +73,20 @@ export const passThroughProcessor: ImageProcessor = { process: async ({ input })
 // The settings that affect a step's output. The step name does not.
 export function settingsKey(step: Step): string {
   if (step.kind === 'prompt') return JSON.stringify(['prompt', step.prompt.trim()]);
+  if (step.kind === 'adjust') return JSON.stringify(['adjust', step.values]);
   return JSON.stringify(['style', step.preset, step.settings[step.preset] ?? null]);
 }
+
+// A short stable hash (FNV-1a) used to name computed images.
+function hash(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
+}
+// Adjusted images are computed, not stored. Their id names the input and the settings, so changing either gives a
+// new id, which marks AI runs made from the old image out of date. Neutral settings pass the input through.
+export const adjustedAssetId = (inputAssetId: string, values: AdjustValues) =>
+  isIdentity(values) ? inputAssetId : `adjust:${inputAssetId}:${hash(JSON.stringify(values))}`;
 
 export type NodeStatus = {
   assetId?: string;      // the image shown on the card
@@ -79,6 +98,7 @@ export type NodeStatus = {
   inputAssetId?: string; // the current input image, when the input is ready
   blockedBy?: string;    // id of the node to run first
   canRun: boolean;
+  derivedFrom?: { inputAssetId: string; values: AdjustValues }; // how to compute an adjusted image
 };
 
 export function resolveNodes(graph: Graph, runs: Runs): Map<string, NodeStatus> {
@@ -94,6 +114,17 @@ export function resolveNodes(graph: Graph, runs: Runs): Map<string, NodeStatus> 
     const node = nodes.get(id), edge = incoming.get(id);
     let status = blank;
     if (node?.data.kind === 'original') status = { ...blank, assetId: node.data.assetId, ready: !!node.data.assetId };
+    else if (edge?.data.kind === 'adjust') {
+      const input = resolve(edge.source);
+      const assetId = input.assetId ? adjustedAssetId(input.assetId, edge.data.values) : undefined;
+      status = {
+        ...blank, assetId, hasInput: true, stale: input.stale,
+        ready: !!assetId && input.ready, pending: false,
+        inputAssetId: input.ready ? input.assetId : undefined,
+        blockedBy: input.assetId ? undefined : edge.source,
+        derivedFrom: input.assetId && assetId !== input.assetId ? { inputAssetId: input.assetId, values: edge.data.values } : undefined,
+      };
+    }
     else if (edge) {
       const input = resolve(edge.source), stepRuns = runs[edge.id] ?? [];
       const picked = stepRuns.find(r => r.id === edge.data.pickedRunId && r.status === 'done' && r.assetId);

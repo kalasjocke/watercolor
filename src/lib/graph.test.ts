@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addOriginal, addStep, cleanGraph, duplicateStep, emptyGraph, loadedRuns, newPromptStep, newRun, newStyleStep, passThroughProcessor,
+  addOriginal, addStep, adjustedAssetId, cleanGraph, duplicateStep, emptyGraph, loadedRuns, newAdjustStep, newPromptStep, newRun, newStyleStep, passThroughProcessor,
   referencedAssets, removeItems, resolveNodes, serializeProject, settingsKey, snapPosition, stepLabel, switchPreset, updateStep,
   validateConnection, type Asset, type Graph, type Run, type Runs, type Step,
 } from './graph';
+import { defaultAdjust } from './adjust';
 import { changedSettings, defaultSettings } from './presets';
 
 const asset: Asset = { id: 'asset-1', blob: new Blob(), filename: 'forest.jpg', width: 1200, height: 800 };
@@ -161,6 +162,54 @@ describe('resolveNodes', () => {
   it('treats outputs without an input as unconnected', () => {
     const nodes = resolveNodes(removeItems(sampleGraph(), new Set(['original']), new Set()), {});
     expect(nodes.get('edit')).toMatchObject({ hasInput: false, canRun: false });
+  });
+});
+
+describe('adjust steps', () => {
+  // original -> adjust -> watercolor
+  function adjustGraph() {
+    let graph: Graph = addOriginal(emptyGraph(), asset, { x: 0, y: 0 }, 'original');
+    graph = addStep(graph, 'original', newAdjustStep(), undefined, 'adj').graph;
+    return addStep(graph, 'adj', newStyleStep(), undefined, 'style').graph;
+  }
+  const setValues = (graph: Graph, changes: object) =>
+    updateStep(graph, 'adj-in', step => step.kind === 'adjust' ? { ...step, values: { ...step.values, ...changes } } : step);
+
+  it('creates an adjusted node and passes the input through at neutral settings', () => {
+    const graph = adjustGraph(), nodes = resolveNodes(graph, {});
+    expect(graph.nodes.find(n => n.id === 'adj')!.data.kind).toBe('adjusted');
+    expect(nodes.get('adj')).toMatchObject({ assetId: 'asset-1', ready: true, canRun: false, derivedFrom: undefined });
+    expect(nodes.get('style')).toMatchObject({ canRun: true, inputAssetId: 'asset-1' });
+  });
+  it('names a computed image after its input and settings, without runs', () => {
+    const graph = setValues(adjustGraph(), { brightness: 20 }), nodes = resolveNodes(graph, {});
+    const id = adjustedAssetId('asset-1', { ...defaultAdjust(), brightness: 20 });
+    expect(id).toMatch(/^adjust:asset-1:/);
+    expect(nodes.get('adj')).toMatchObject({ assetId: id, ready: true, derivedFrom: { inputAssetId: 'asset-1' } });
+    expect(adjustedAssetId('asset-1', { ...defaultAdjust(), brightness: 21 })).not.toBe(id);
+    expect(nodes.get('style')).toMatchObject({ canRun: true, inputAssetId: id });
+  });
+  it('marks AI steps after it out of date when a slider moves', () => {
+    let state = { graph: setValues(adjustGraph(), { contrast: 10 }), runs: {} as Runs };
+    state = runStep(state, 'style-in');
+    expect(resolveNodes(state.graph, state.runs).get('style')!.stale).toBe(false);
+    const moved = resolveNodes(setValues(state.graph, { contrast: 30 }), state.runs);
+    expect(moved.get('style')).toMatchObject({ stale: true, canRun: true });
+    const back = resolveNodes(setValues(state.graph, { contrast: 10 }), state.runs);
+    expect(back.get('style')!.stale).toBe(false);
+  });
+  it('follows an out-of-date input and waits for an input image', () => {
+    let state = runAll(sampleGraph());
+    state = { ...state, graph: addStep(state.graph, 'edit', newAdjustStep(), undefined, 'adj').graph };
+    const stale = resolveNodes(setPrompt(state.graph, 'edit-in', 'Remove the fence'), state.runs);
+    expect(stale.get('adj')).toMatchObject({ stale: true, ready: false, assetId: 'out-edit-1' });
+    const unrun = resolveNodes(addStep(sampleGraph(), 'edit', newAdjustStep(), undefined, 'adj').graph, {});
+    expect(unrun.get('adj')).toMatchObject({ assetId: undefined, blockedBy: 'edit', canRun: false });
+  });
+  it('labels adjust steps and only connects them to adjusted nodes', () => {
+    const graph = adjustGraph();
+    expect(stepLabel(newAdjustStep())).toBe('Adjust');
+    expect(validateConnection(graph, 'style', 'adj', { replacing: 'adj-in', kind: 'style' })).toMatch(/variation node/);
   });
 });
 

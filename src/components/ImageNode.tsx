@@ -2,6 +2,7 @@ import { useRef, useState, type MouseEvent } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import { useCanvas } from '../canvas-context';
 import { kindLabels, type ImageNode, type NodeStatus } from '../lib/graph';
+import { changedAdjustments } from '../lib/adjust';
 import { changedSettings } from '../lib/presets';
 import { Icon } from './Icons';
 import { MenuButton, type MenuItem } from './Menu';
@@ -21,7 +22,7 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
   const status = nodes.get(id) ?? { stale: false, ready: false, pending: false, hasInput: false, canRun: false };
   const asset = status.assetId ? assets.get(status.assetId) : undefined;
   const edge = incoming.get(id);
-  const changed = edge?.data.kind === 'style' ? changedSettings(edge.data) : [];
+  const changed = edge?.data.kind === 'style' ? changedSettings(edge.data) : edge?.data.kind === 'adjust' ? changedAdjustments(edge.data.values) : [];
   const blockerName = status.blockedBy ? flow.getNode(status.blockedBy)?.data.name : undefined;
   const [renaming, setRenaming] = useState(false);
   const cancelRename = useRef(false);
@@ -34,6 +35,7 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
     { label: 'Rename', onSelect: () => setRenaming(true) },
     { label: 'Edit with prompt', icon: 'prompt', onSelect: () => actions.createStep(id, 'prompt') },
     { label: 'Create variation', icon: 'style', onSelect: () => actions.createStep(id, 'style') },
+    { label: 'Adjust', icon: 'sliders', onSelect: () => actions.createStep(id, 'adjust') },
     ...(incoming.has(id) ? [{ label: 'Duplicate step', onSelect: () => actions.duplicateStep(id) }] : []),
     ...(asset ? [{ label: 'View larger', icon: 'eye' as const, onSelect: () => actions.openViewer(id) }] : []),
     { label: 'Delete', danger: true, onSelect: () => actions.deleteNode(id) },
@@ -55,8 +57,8 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
         </>}
         {!asset && (data.kind === 'original'
           ? <div className="placeholder">Image unavailable</div>
-          : status.pending
-            ? <div className="placeholder"><span className="status-pill"><span className="spinner" />Generating…</span></div>
+          : status.pending || status.derivedFrom
+            ? <div className="placeholder"><span className="status-pill"><span className="spinner" />{status.pending ? 'Generating…' : 'Adjusting…'}</span></div>
             : <div className={`placeholder${status.error ? ' failed' : ''}`}>
                 <Icon name={status.hasInput ? 'style' : 'link'} size={20} />
                 <span className="placeholder-text" title={emptyText(status, blockerName)}>{emptyText(status, blockerName)}</span>

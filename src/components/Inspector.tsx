@@ -1,7 +1,8 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useCanvas } from '../canvas-context';
 import { openAI } from '../config';
-import { kindLabels, stepLabel, switchPreset, updateNode, updateStep, type Graph, type ImageNode, type PromptStep, type StepEdge, type StyleStep } from '../lib/graph';
+import { colorControls, defaultAdjust, isIdentity, lightControls, type AdjustControl, type AdjustKey } from '../lib/adjust';
+import { kindLabels, stepLabel, switchPreset, updateNode, updateStep, type AdjustStep, type Graph, type ImageNode, type PromptStep, type StepEdge, type StyleStep } from '../lib/graph';
 import { defaultSettings, getSettings, preserveLabels, presets, sharedControls, type Control, type PresetId, type PreserveKey } from '../lib/presets';
 import type { History } from '../useDocument';
 import { Icon } from './Icons';
@@ -14,9 +15,12 @@ export function Inspector({ graph, history, focusPromptFor, onDelete, onClose, o
   const nodes = graph.nodes.filter(n => n.selected), edges = graph.edges.filter(e => e.selected);
   let content: ReactNode;
   if (nodes.length + edges.length > 1) content = <MultiInspector count={nodes.length + edges.length} onDelete={onDelete} />;
-  else if (edges.length === 1) content = edges[0].data.kind === 'prompt'
-    ? <PromptInspector key={edges[0].id} graph={graph} edge={edges[0]} step={edges[0].data} history={history} autoFocus={focusPromptFor === edges[0].id} />
-    : <StyleInspector key={edges[0].id} graph={graph} edge={edges[0]} step={edges[0].data} history={history} />;
+  else if (edges.length === 1) {
+    const edge = edges[0], step = edge.data;
+    content = step.kind === 'prompt' ? <PromptInspector key={edge.id} graph={graph} edge={edge} step={step} history={history} autoFocus={focusPromptFor === edge.id} />
+      : step.kind === 'style' ? <StyleInspector key={edge.id} graph={graph} edge={edge} step={step} history={history} />
+      : <AdjustInspector key={edge.id} graph={graph} edge={edge} step={step} history={history} />;
+  }
   else if (nodes.length === 1) content = <NodeInspector key={nodes[0].id} graph={graph} node={nodes[0]} history={history} />;
   else content = <CanvasHelp />;
   return (
@@ -113,15 +117,41 @@ function StyleInspector({ graph, edge, step, history }: { graph: Graph; edge: St
 }
 
 // A range input whose drag, or run of arrow-key presses, forms one undo step.
-function Slider({ control, value, history, onChange }: { control: Control; value: number; history: History; onChange: (value: number) => void }) {
+// With a negative `min`, the track fills from 0, and the value can be clicked to reset it to 0.
+function Slider({ control, value, history, onChange, min = 0 }: { control: Pick<Control, 'label' | 'low' | 'high'>; value: number; history: History; onChange: (value: number) => void; min?: number }) {
+  const percent = (v: number) => `${(v - min) / (100 - min) * 100}%`;
+  const from = min < 0 ? Math.min(0, value) : min, to = min < 0 ? Math.max(0, value) : value;
+  const shown = min < 0 && value > 0 ? `+${value}` : `${value}`;
   return (
     <div className="slider">
-      <div className="slider-head"><span>{control.label}</span><output>{value}</output></div>
-      <input type="range" min={0} max={100} value={value} aria-label={control.label} style={{ '--fill': `${value}%` } as CSSProperties}
+      <div className="slider-head"><span>{control.label}</span>
+        {min < 0 && value !== 0
+          ? <button className="slider-reset" title={`Reset ${control.label} to 0`} onClick={() => { history.beginGesture(); onChange(0); history.endGesture(); }}>{shown}</button>
+          : <output>{shown}</output>}
+      </div>
+      <input type="range" min={min} max={100} value={value} aria-label={control.label} style={{ '--from': percent(from), '--to': percent(to) } as CSSProperties}
         onPointerDown={history.beginGesture} onPointerUp={history.endGesture} onLostPointerCapture={history.endGesture}
         onKeyDown={history.beginGesture} onKeyUp={history.endGesture} onBlur={history.endGesture}
         onChange={event => onChange(Number(event.target.value))} />
       <div className="slider-ends"><span>{control.low}</span><span>{control.high}</span></div>
+    </div>
+  );
+}
+
+function AdjustInspector({ graph, edge, step, history }: { graph: Graph; edge: StepEdge; step: AdjustStep; history: History }) {
+  const setValue = (key: AdjustKey, value: number) => (g: Graph) => updateStep(g, edge.id, s => s.kind === 'adjust' ? { ...s, values: { ...s.values, [key]: value } } : s);
+  const slider = (control: AdjustControl) => (
+    <Slider key={control.key} control={control} min={-100} value={step.values[control.key] ?? 0} history={history}
+      onChange={value => history.set(setValue(control.key, value))} />
+  );
+  return (
+    <div className="inspector-body">
+      <StepHeader graph={graph} edge={edge} history={history} kind="Adjust step" />
+      <p className="hint">Changes apply right away in the browser. They cost nothing and use no AI.</p>
+      <section className="group"><h3>Light</h3>{lightControls.map(slider)}</section>
+      <section className="group"><h3>Color</h3>{colorControls.map(slider)}</section>
+      <button className="secondary-button" disabled={isIdentity(step.values)}
+        onClick={() => history.commit(g => updateStep(g, edge.id, s => s.kind === 'adjust' ? { ...s, values: defaultAdjust() } : s))}>Reset all</button>
     </div>
   );
 }
@@ -144,6 +174,7 @@ function NodeInspector({ graph, node, history }: { graph: Graph; node: ImageNode
       <div className="button-stack">
         <button className="secondary-button" onClick={() => actions.createStep(node.id, 'prompt')}><Icon name="prompt" />Edit with prompt</button>
         <button className="secondary-button" onClick={() => actions.createStep(node.id, 'style')}><Icon name="style" />Create variation</button>
+        <button className="secondary-button" onClick={() => actions.createStep(node.id, 'adjust')}><Icon name="sliders" />Adjust</button>
         {input && <button className="secondary-button" onClick={() => actions.duplicateStep(node.id)}>Duplicate step</button>}
         <button className="danger-button" onClick={() => actions.deleteNode(node.id)}>Delete</button>
       </div>
@@ -171,6 +202,7 @@ function CanvasHelp() {
         <li>Click an image or a step badge to see its settings.</li>
         <li><strong>Edit with prompt</strong> makes a new base image from a written edit.</li>
         <li><strong>Create variation</strong> applies an art style. Branch as often as you like.</li>
+        <li><strong>Adjust</strong> changes light and color right away, without AI.</li>
         <li>Drag from a card's right handle to connect it, or drop on empty canvas to add a step.</li>
         <li>Drag the background or hold Space to pan. Scroll to zoom. Shift-drag to select several.</li>
         <li>⌘Z undoes, ⇧⌘Z redoes, Delete removes the selection.</li>

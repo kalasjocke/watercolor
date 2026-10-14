@@ -30,6 +30,8 @@ Each run sends the input image, scaled to 1024px on its long side, to the image 
 
 A step only produces an image when you press Run. Each run is kept, and the step's picked run is the image its output card shows and passes to the next step. When a step's input or settings change after its picked run, the card is marked out of date and keeps its old image until you run it again. Runs are not part of undo history, but picking a run is.
 
+Adjust steps are the exception. They change brightness, contrast, highlights, shadows, whites, blacks, temperature, tint, vibrance and saturation in the browser, without AI, and update as you drag. Their images are computed at up to 2048px and never stored; an adjusted image's id names its input and settings, so steps after it go out of date when a slider moves. The pixel math is in `src/lib/adjust.ts`.
+
 The processing boundary is `ImageProcessor` in `src/lib/graph.ts`:
 
 ```ts

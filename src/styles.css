@@ -88,6 +88,7 @@ h1, h2, h3, p { margin: 0; }
 .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; background: #f3f4f6; color: #4b5563; }
 .badge.edit { background: var(--edit-soft); color: var(--edit); }
 .badge.variation { background: var(--accent-soft); color: var(--accent); }
+.badge.adjusted { background: #ecfdf5; color: #047857; }
 .card-settings { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .card-settings li { padding: 2px 7px; border-radius: 6px; background: #f3f4f6; color: #4b5563; font-size: 11px; }
 .react-flow__handle { width: 12px; height: 12px; background: var(--surface); border: 2px solid var(--edge); }
@@ -160,8 +161,11 @@ h1, h2, h3, p { margin: 0; }
 .slider-head output { min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .slider-ends { display: flex; justify-content: space-between; color: var(--faint); font-size: 11px; }
 .slider input { appearance: none; width: 100%; height: 18px; margin: 0; background: transparent; }
-.slider input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--accent) var(--fill), var(--border) var(--fill)); }
-.slider input::-moz-range-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--accent) var(--fill), var(--border) var(--fill)); }
+/* The track is blue between --from and --to: from the start for 0 to 100 sliders, and from 0 for centered ones. */
+.slider input::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--border) var(--from), var(--accent) var(--from), var(--accent) var(--to), var(--border) var(--to)); }
+.slider input::-moz-range-track { height: 4px; border-radius: 2px; background: linear-gradient(to right, var(--border) var(--from), var(--accent) var(--from), var(--accent) var(--to), var(--border) var(--to)); }
+.slider-reset { border: 0; padding: 0 4px; margin-right: -4px; border-radius: 4px; background: none; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 13px; }
+.slider-reset:hover { background: var(--accent-soft); }
 .slider input::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); box-shadow: var(--shadow); }
 .slider input::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
 

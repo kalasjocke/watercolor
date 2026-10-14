@@ -15,10 +15,11 @@ import { openAI } from './config';
 import { readImageFile } from './lib/assets';
 import { createOpenAIProcessor } from './lib/openai';
 import {
-  addOriginal, addStep, duplicateStep, newPromptStep, newRun, newStyleStep, passThroughProcessor, removeItems, resolveNodes, selectOnly, serializeProject,
+  addOriginal, addStep, duplicateStep, newRun, newStep, passThroughProcessor, removeItems, resolveNodes, selectOnly, serializeProject,
   snapGrid, stepKindFor, stepLabel, updateNode, updateStep, validateConnection, type Graph, type ImageNode, type ImageProcessor, type Run, type Runs, type Step, type StepEdge,
 } from './lib/graph';
 import { saveAssets, saveProject } from './lib/storage';
+import { useAdjustedImages } from './useAdjustedImages';
 import { useDocument } from './useDocument';
 
 const nodeTypes = { image: ImageNodeView };
@@ -73,10 +74,11 @@ export function Studio(props: StudioProps) {
   const { toasts, notify, dismiss } = useToasts();
   const [runs, setRuns] = useState(props.runs);
   // Run callbacks finish later, so they read the latest runs and assets through refs.
-  const runsRef = useRef(runs), assetsRef = useRef(assets);
+  const runsRef = useRef(runs);
   runsRef.current = runs;
-  assetsRef.current = assets;
   const nodes = useMemo(() => resolveNodes(graph, runs), [graph, runs]);
+  // Stored images plus adjusted images computed in the browser.
+  const { assets: allAssets, ensure: ensureAsset } = useAdjustedImages(nodes, assets);
   useAutosave(graph, viewport, runs, props.storageError, notify);
   const incoming = useMemo(() => new Map(graph.edges.map(e => [e.target, e])), [graph.edges]);
 
@@ -89,7 +91,7 @@ export function Studio(props: StudioProps) {
 
   const createStep = useCallback((sourceId: string, kind: Step['kind'], position?: XYPosition) => {
     let created: { nodeId: string; edgeId: string } | undefined;
-    history.commit(g => { const result = addStep(g, sourceId, kind === 'prompt' ? newPromptStep() : newStyleStep(), position); created = result; return result.graph; });
+    history.commit(g => { const result = addStep(g, sourceId, newStep(kind), position); created = result; return result.graph; });
     if (!created) return;
     setInspectorOpen(true);
     setFocusPromptFor(kind === 'prompt' ? created.edgeId : null);
@@ -100,7 +102,7 @@ export function Studio(props: StudioProps) {
     const g = history.current(), error = validateConnection(g, source, target);
     if (error) return notify(error);
     const kind = stepKindFor(g.nodes.find(n => n.id === target)!.data.kind)!;
-    const edge: StepEdge = { id: crypto.randomUUID(), type: 'step', source, target, data: kind === 'prompt' ? newPromptStep() : newStyleStep() };
+    const edge: StepEdge = { id: crypto.randomUUID(), type: 'step', source, target, data: newStep(kind) };
     history.commit(selectOnly({ ...g, edges: [...g.edges, edge] }, { edges: [edge.id] }));
     setInspectorOpen(true);
   }, [history, notify]);
@@ -114,12 +116,15 @@ export function Studio(props: StudioProps) {
     const g = history.current(), edge = g.edges.find(e => e.id === edgeId);
     const status = edge && resolveNodes(g, runsRef.current).get(edge.target);
     if (!edge || !status?.canRun || !status.inputAssetId) return;
-    const input = assetsRef.current.get(status.inputAssetId);
+    const input = await ensureAsset(status.inputAssetId).catch(() => undefined);
     if (!input) return notify('The input image is missing.');
     const run = newRun(input.id, edge.data);
     setRuns(current => ({ ...current, [edgeId]: [run, ...(current[edgeId] ?? [])] }));
     try {
-      const output = await processor.process({ input, step: edge.data, quality: 'draft' });
+      const processed = await processor.process({ input, step: edge.data, quality: 'draft' });
+      // A computed (adjusted) image is never stored, so a run that returns one keeps a saved copy of it.
+      const { blob, filename, width, height } = processed;
+      const output = processed.id === input.id && !assets.has(input.id) ? { id: crypto.randomUUID(), blob, filename, width, height } : processed;
       if (output.id !== input.id) {
         try { await saveAssets([output]); }
         catch (error) { notify(`The draft couldn't be saved locally: ${errorText(error)} It stays open in this tab.`); }
@@ -131,7 +136,7 @@ export function Studio(props: StudioProps) {
       updateRun(edgeId, run.id, { status: 'failed', error: errorText(error) });
       notify(`${stepLabel(edge.data)} failed: ${errorText(error)}`);
     }
-  }, [history, notify, updateRun]);
+  }, [assets, ensureAsset, history, notify, updateRun]);
 
   const deleteSelection = useCallback(() => {
     const g = history.current();
@@ -234,8 +239,8 @@ export function Studio(props: StudioProps) {
   const edges = useMemo(() => graph.edges.map(e => ({ ...e, markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: e.selected ? '#2563eb' : '#9aa3b2' } })), [graph.edges]);
   const viewerNode = viewerId ? graph.nodes.find(n => n.id === viewerId) : undefined;
   const viewerAssetId = viewerId ? nodes.get(viewerId)?.assetId : undefined;
-  const viewerAsset = viewerAssetId ? assets.get(viewerAssetId) : undefined;
-  const context = useMemo(() => ({ nodes, runs, assets, incoming, actions, live }), [nodes, runs, assets, incoming, actions]);
+  const viewerAsset = viewerAssetId ? allAssets.get(viewerAssetId) : undefined;
+  const context = useMemo(() => ({ nodes, runs, assets: allAssets, incoming, actions, live }), [nodes, runs, allAssets, incoming, actions]);
 
   return (
     <CanvasContext.Provider value={context}>
@@ -267,6 +272,7 @@ export function Studio(props: StudioProps) {
         {dropMenu && <Menu at={dropMenu.at} title="Add a step" onClose={() => setDropMenu(null)} items={[
           { label: 'Edit with prompt', icon: 'prompt', onSelect: () => createStep(dropMenu.sourceId, 'prompt', dropMenu.position) },
           { label: 'Create variation', icon: 'style', onSelect: () => createStep(dropMenu.sourceId, 'style', dropMenu.position) },
+          { label: 'Adjust', icon: 'sliders', onSelect: () => createStep(dropMenu.sourceId, 'adjust', dropMenu.position) },
         ]} />}
         {viewerNode && viewerAsset && <Viewer asset={viewerAsset} name={viewerNode.data.name} onClose={() => setViewerId(null)} />}
         <div className="toasts" role="status" aria-live="polite">

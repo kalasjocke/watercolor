@@ -13,7 +13,8 @@ export function outputSize(width: number, height: number): Size {
   return ratio > 1.2 ? '1536x1024' : ratio < 1 / 1.2 ? '1024x1536' : '1024x1024';
 }
 
-export const stepPrompt = (step: Step) => step.kind === 'prompt' ? step.prompt.trim() : stylePrompt(step);
+// Adjust steps run in the browser and never reach the API.
+export const stepPrompt = (step: Step) => step.kind === 'prompt' ? step.prompt.trim() : step.kind === 'style' ? stylePrompt(step) : '';
 
 // Scales an image so its long side is at most `longSide`, and encodes it as JPEG for upload.
 export async function scaleImage(blob: Blob, longSide: number): Promise<Blob> {

@@ -15,9 +15,9 @@ export function StepEdgeView({ id, target, sourceX, sourceY, targetX, targetY, s
       <EdgeLabelRenderer>
         <button className={`edge-badge nodrag nopan ${data.kind}${selected ? ' selected' : ''}${empty ? ' empty' : ''}${status?.stale ? ' stale' : ''}`}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-          title={data.kind === 'prompt' ? data.prompt || 'Write a prompt in the inspector' : 'Open style settings'}
+          title={data.kind === 'prompt' ? data.prompt || 'Write a prompt in the inspector' : data.kind === 'style' ? 'Open style settings' : 'Open adjustments'}
           onClick={event => { event.stopPropagation(); actions.selectEdge(id); }}>
-          <Icon name={data.kind === 'prompt' ? 'prompt' : 'style'} size={13} />
+          <Icon name={data.kind === 'prompt' ? 'prompt' : data.kind === 'style' ? 'style' : 'sliders'} size={13} />
           <span>{stepLabel(data)}</span>
         </button>
       </EdgeLabelRenderer>
