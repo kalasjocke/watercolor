@@ -22,6 +22,12 @@ export default defineConfig(({ mode }) => {
     },
     server: { proxy },
     preview: { proxy },
-    test: { environment: 'node' },
+    test: {
+      projects: [
+        { extends: true, test: { name: 'unit', environment: 'node', include: ['src/**/*.test.ts'], exclude: ['src/**/*.browser.test.ts'] } },
+        // WebGL code is tested in the installed Chrome, through Playwright.
+        { extends: true, test: { name: 'browser', include: ['src/**/*.browser.test.ts'], browser: { enabled: true, provider: 'playwright', headless: true, instances: [{ browser: 'chromium', launch: { channel: 'chrome' } }] } } },
+      ],
+    },
   };
 });
