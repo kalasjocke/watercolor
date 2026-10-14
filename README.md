@@ -16,19 +16,17 @@ npm run typecheck
 npm run build
 ```
 
-## Pass-through processing
+## Runs and processing
 
-No image is generated yet. Every output node shows its input image unchanged.
+A step only produces an image when you press Run. Each run is kept, and the step's picked run is the image its output card shows and passes to the next step. When a step's input or settings change after its picked run, the card is marked out of date and keeps its old image until you run it again. Runs are not part of undo history, but picking a run is.
 
-The boundary is `ImageProcessor` in `src/lib/graph.ts`:
+The processing boundary is `ImageProcessor` in `src/lib/graph.ts`:
 
 ```ts
-interface ImageProcessor { process(inputAssetId: string, step: Step): string | Promise<string> }
+interface ImageProcessor { process(request: { input: Asset; step: Step; quality: 'draft' | 'final' }): Promise<Asset> }
 ```
 
-It takes the input asset id and the step (a prompt or a style recipe) and returns the output asset id. `passThroughProcessor` returns the input id. A real adapter, for example OpenAI image editing for prompt steps, would store the generated image as an asset and return its id. `useProcessedImages` caches results per input and settings, and shows outputs as pending while a promise is unresolved.
-
-A prompt step reaches the processor only when Generate is pressed (`appliedPrompt`), so typing a prompt never triggers generation. Style steps are processed whenever their settings change.
+It takes the input image and the step (a prompt or a style recipe) and returns the output image. `passThroughProcessor` returns the input unchanged, so a run copies its input image.
 
 ## Layout
 

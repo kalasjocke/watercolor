@@ -201,7 +201,7 @@ The first version is built. The next version connects real image generation at d
 
 ### Runs
 
-- Store steps in their own list. An edge refers to its step by id. This keeps the door open for steps with more than one input later, such as a mask or a reference image.
+- Steps stay on their edges, and runs are keyed by the edge id. This needs no change to the save format. Moving steps into their own list can wait until a step needs more than one input, such as a mask or a reference image.
 - Each step keeps every run, newest first. A run stores its id, the input asset id, the settings it used, its quality (`draft` or `final`), its status (pending, done or failed with the error message), its output asset id, and when it ran. Each run produces one image.
 - Each step has one picked run. The picked run's image is the step's output and feeds the steps after it. A new run is picked automatically when it finishes. Picking another run is an undoable change.
 - Earlier runs are kept, never replaced. The inspector shows them as a strip of thumbnails to pick from.

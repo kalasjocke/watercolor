@@ -1,12 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addOriginal, addStep, cleanGraph, duplicateStep, emptyGraph, newPromptStep, newStyleStep, passThroughProcessor, processingKey,
-  removeItems, resolveImages, serializeProject, snapPosition, stepLabel, switchPreset, validateConnection, type Asset, type Graph, type NodeImage,
+  addOriginal, addStep, cleanGraph, duplicateStep, emptyGraph, loadedRuns, newPromptStep, newRun, newStyleStep, passThroughProcessor,
+  referencedAssets, removeItems, resolveNodes, serializeProject, settingsKey, snapPosition, stepLabel, switchPreset, updateStep,
+  validateConnection, type Asset, type Graph, type Run, type Runs, type Step,
 } from './graph';
 import { defaultSettings } from './presets';
 
 const asset: Asset = { id: 'asset-1', blob: new Blob(), filename: 'forest.jpg', width: 1200, height: 800 };
-const passThrough = (input: string): NodeImage => ({ status: 'ready', assetId: passThroughProcessor.process(input, newPromptStep()) as string });
+
+// Runs one step on its current input, the way Studio does: a finished run whose output is out-<target>-<n>, then picked.
+function runStep(state: { graph: Graph; runs: Runs }, edgeId: string, patch: Partial<Run> = {}) {
+  const edge = state.graph.edges.find(e => e.id === edgeId)!;
+  const status = resolveNodes(state.graph, state.runs).get(edge.target)!;
+  if (!status.canRun) throw new Error(`${edgeId} cannot run`);
+  const previous = state.runs[edgeId] ?? [];
+  const run: Run = { ...newRun(status.inputAssetId!, edge.data), status: 'done', assetId: `out-${edge.target}-${previous.length + 1}`, ...patch };
+  const runs = { ...state.runs, [edgeId]: [run, ...previous] };
+  const graph = run.status === 'done' ? updateStep(state.graph, edgeId, step => ({ ...step, pickedRunId: run.id })) : state.graph;
+  return { graph, runs, run };
+}
+function runAll(graph: Graph) {
+  let state = { graph, runs: {} as Runs };
+  for (const edge of graph.edges) state = runStep(state, edge.id);
+  return state;
+}
+const setPrompt = (graph: Graph, edgeId: string, prompt: string) => updateStep(graph, edgeId, step => ({ ...step, prompt }) as Step);
 
 // original -> prompt -> edit, which branches into two style variations, one of which is chained.
 function sampleGraph() {
@@ -72,35 +90,108 @@ describe('addStep', () => {
   });
 });
 
-describe('resolveImages', () => {
-  it('shows the original image in every connected output', () => {
-    const images = resolveImages(sampleGraph(), passThrough);
-    expect([...images.values()]).toEqual(Array(5).fill({ status: 'ready', assetId: 'asset-1' }));
+describe('resolveNodes', () => {
+  it('lets only steps with a ready input run before anything has run', () => {
+    const nodes = resolveNodes(sampleGraph(), {});
+    expect(nodes.get('original')).toMatchObject({ assetId: 'asset-1', ready: true });
+    expect(nodes.get('edit')).toMatchObject({ assetId: undefined, canRun: true, inputAssetId: 'asset-1' });
+    expect(nodes.get('a')).toMatchObject({ assetId: undefined, canRun: false, blockedBy: 'edit' });
+    expect(nodes.get('c')).toMatchObject({ canRun: false, blockedBy: 'a' });
   });
-  it('marks outputs without an input as missing, including everything downstream', () => {
-    const images = resolveImages(removeItems(sampleGraph(), new Set(['original']), new Set()), passThrough);
-    expect(['edit', 'a', 'b', 'c'].map(id => images.get(id)!.status)).toEqual(['missing', 'missing', 'missing', 'missing']);
+  it('shows each picked run and feeds it to the next step', () => {
+    const { graph, runs } = runAll(sampleGraph()), nodes = resolveNodes(graph, runs);
+    expect(['edit', 'a', 'b', 'c'].map(id => nodes.get(id)!.assetId)).toEqual(['out-edit-1', 'out-a-1', 'out-b-1', 'out-c-1']);
+    expect(runs['a-in'][0].inputAssetId).toBe('out-edit-1');
+    expect(runs['c-in'][0].inputAssetId).toBe('out-a-1');
+    expect([...nodes.values()].every(n => n.ready && !n.stale)).toBe(true);
   });
-  it('updates downstream outputs when a step is reconnected', () => {
-    const second: Asset = { ...asset, id: 'asset-2' };
-    let graph = addOriginal(sampleGraph(), second, { x: 0, y: 0 }, 'second');
+  it('marks a step and everything after it out of date when its prompt changes, without hiding images', () => {
+    const state = runAll(sampleGraph()), nodes = resolveNodes(setPrompt(state.graph, 'edit-in', 'Remove the fence'), state.runs);
+    expect(['edit', 'a', 'b', 'c'].map(id => nodes.get(id)!.stale)).toEqual([true, true, true, true]);
+    expect(nodes.get('edit')).toMatchObject({ assetId: 'out-edit-1', canRun: true });
+    expect(nodes.get('a')).toMatchObject({ assetId: 'out-a-1', canRun: false, blockedBy: 'edit' });
+  });
+  it('clears out-of-date markers as the steps are run again in order', () => {
+    let state = runAll(sampleGraph());
+    state = { ...state, graph: setPrompt(state.graph, 'edit-in', 'Remove the fence') };
+    state = runStep(state, 'edit-in');
+    let nodes = resolveNodes(state.graph, state.runs);
+    expect(['edit', 'a', 'c'].map(id => nodes.get(id)!.stale)).toEqual([false, true, true]);
+    state = runStep(runStep(runStep(state, 'a-in'), 'b-in'), 'c-in');
+    nodes = resolveNodes(state.graph, state.runs);
+    expect([...nodes.values()].some(n => n.stale)).toBe(false);
+  });
+  it('ignores step name changes', () => {
+    const state = runAll(sampleGraph());
+    const renamed = updateStep(state.graph, 'edit-in', step => ({ ...step, name: 'Car removal' }));
+    expect(resolveNodes(renamed, state.runs).get('edit')!.stale).toBe(false);
+  });
+  it('marks a reconnected step and its branch out of date', () => {
+    const state = runAll(sampleGraph());
+    let graph = addOriginal(state.graph, { ...asset, id: 'asset-2' }, { x: 0, y: 0 }, 'second');
     graph = { ...graph, edges: graph.edges.map(e => e.id === 'a-in' ? { ...e, source: 'second' } : e) };
-    const images = resolveImages(graph, passThrough);
-    expect(images.get('a')).toEqual({ status: 'ready', assetId: 'asset-2' });
-    expect(images.get('c')).toEqual({ status: 'ready', assetId: 'asset-2' });
-    expect(images.get('b')).toEqual({ status: 'ready', assetId: 'asset-1' });
+    const nodes = resolveNodes(graph, state.runs);
+    expect(['a', 'c', 'b'].map(id => nodes.get(id)!.stale)).toEqual([true, true, false]);
+    expect(nodes.get('a')).toMatchObject({ canRun: true, inputAssetId: 'asset-2' });
   });
-  it('propagates a pending result downstream', () => {
-    const images = resolveImages(sampleGraph(), (input, step) => step.kind === 'prompt' ? { status: 'pending' } : passThrough(input));
-    expect(['edit', 'a', 'c'].map(id => images.get(id)!.status)).toEqual(['pending', 'pending', 'pending']);
+  it('blocks a step and the steps after it while a run is pending', () => {
+    const state = runAll(sampleGraph());
+    const pending = runStep(state, 'edit-in', { status: 'pending', assetId: undefined });
+    const nodes = resolveNodes(pending.graph, pending.runs);
+    expect(nodes.get('edit')).toMatchObject({ pending: true, canRun: false, assetId: 'out-edit-1', stale: false, ready: false });
+    expect(nodes.get('a')).toMatchObject({ canRun: false, blockedBy: 'edit', stale: false });
+  });
+  it('keeps the picked image and reports the error when the latest run fails', () => {
+    const state = runAll(sampleGraph());
+    const failed = runStep(state, 'b-in', { status: 'failed', assetId: undefined, error: 'Rate limited' });
+    expect(resolveNodes(failed.graph, failed.runs).get('b')).toMatchObject({ assetId: 'out-b-1', error: 'Rate limited', canRun: true });
+  });
+  it('shows an earlier run when it is picked, and marks the steps after it out of date', () => {
+    let state = runAll(sampleGraph());
+    const first = state.runs['edit-in'][0].id;
+    state = runStep(state, 'edit-in');
+    const graph = updateStep(state.graph, 'edit-in', step => ({ ...step, pickedRunId: first }));
+    const nodes = resolveNodes(graph, state.runs);
+    expect(nodes.get('edit')).toMatchObject({ assetId: 'out-edit-1', stale: false });
+    expect(nodes.get('a')!.stale).toBe(false);
+    const latest = resolveNodes(state.graph, state.runs);
+    expect(latest.get('edit')!.assetId).toBe('out-edit-2');
+    expect(latest.get('a')!.stale).toBe(true);
+  });
+  it('treats outputs without an input as unconnected', () => {
+    const nodes = resolveNodes(removeItems(sampleGraph(), new Set(['original']), new Set()), {});
+    expect(nodes.get('edit')).toMatchObject({ hasInput: false, canRun: false });
+  });
+});
+
+describe('runs', () => {
+  it('returns the input unchanged from the pass-through processor', async () => {
+    expect(await passThroughProcessor.process({ input: asset, step: newPromptStep('x'), quality: 'draft' })).toBe(asset);
+  });
+  it('drops runs of deleted steps and fails runs cut off by a reload', () => {
+    const state = runStep(runAll(sampleGraph()), 'b-in', { status: 'pending', assetId: undefined });
+    const graph = removeItems(state.graph, new Set(['c']), new Set());
+    const runs = loadedRuns(graph, { ...state.runs, gone: [] });
+    expect(Object.keys(runs).sort()).toEqual(['a-in', 'b-in', 'edit-in']);
+    expect(runs['b-in'][0]).toMatchObject({ status: 'failed', error: 'Interrupted before it finished.' });
+  });
+  it('counts run outputs as referenced assets', () => {
+    const { graph, runs } = runAll(sampleGraph());
+    expect([...referencedAssets(graph, runs)].sort()).toEqual(['asset-1', 'out-a-1', 'out-b-1', 'out-c-1', 'out-edit-1']);
+  });
+  it('does not copy the picked run when a step is duplicated', () => {
+    const { graph } = runAll(sampleGraph());
+    const result = duplicateStep(graph, 'b')!;
+    expect(result.graph.edges.find(e => e.id === result.edgeId)!.data.pickedRunId).toBeUndefined();
   });
 });
 
 describe('steps', () => {
-  it('only reprocesses a prompt step after it is generated', () => {
-    const step = newPromptStep('Remove the car');
-    expect(processingKey('x', step)).toBe(processingKey('x', { ...step, prompt: 'Remove the car and the sign' }));
-    expect(processingKey('x', step)).not.toBe(processingKey('x', { ...step, appliedPrompt: 'Remove the car' }));
+  it('keys settings by what changes the output', () => {
+    const step = newStyleStep('ukiyoe');
+    expect(settingsKey({ ...step, name: 'Bold' })).toBe(settingsKey(step));
+    expect(settingsKey(switchPreset(step, 'sumie'))).not.toBe(settingsKey(step));
+    expect(settingsKey(newPromptStep('Remove the car '))).toBe(settingsKey(newPromptStep('Remove the car')));
   });
   it('labels steps from their name, prompt or preset', () => {
     expect(stepLabel(newPromptStep())).toBe('New prompt');

@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { Asset, NodeImage, Step, StepEdge } from './lib/graph';
+import type { Asset, NodeStatus, Runs, Step, StepEdge } from './lib/graph';
 
 export type LoadedAsset = Asset & { url: string };
 export type CanvasActions = {
@@ -9,8 +9,11 @@ export type CanvasActions = {
   deleteNode(nodeId: string): void;
   selectEdge(edgeId: string): void;
   openViewer(nodeId: string): void;
+  runStep(edgeId: string): void;
+  pickRun(edgeId: string, runId: string): void;
 };
-export type CanvasContextValue = { images: Map<string, NodeImage>; assets: Map<string, LoadedAsset>; incoming: Map<string, StepEdge>; actions: CanvasActions };
+// `live` is true when runs call a real image model, and false for the pass-through processor.
+export type CanvasContextValue = { nodes: Map<string, NodeStatus>; runs: Runs; assets: Map<string, LoadedAsset>; incoming: Map<string, StepEdge>; actions: CanvasActions; live: boolean };
 
 export const CanvasContext = createContext<CanvasContextValue | null>(null);
 export function useCanvas() {

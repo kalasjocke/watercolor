@@ -4,20 +4,23 @@ import { defaultSettings, newRecipe, presets, type PresetId, type Recipe } from 
 export type NodeKind = 'original' | 'edit' | 'variation';
 export type ImageData = { name: string; kind: NodeKind; assetId?: string };
 export type ImageNode = Node<ImageData, 'image'>;
-// A prompt step only reaches the processor once Generate is pressed, so typing never triggers generation.
-export type PromptStep = { kind: 'prompt'; name: string; prompt: string; appliedPrompt: string };
-export type StyleStep = { kind: 'style' } & Recipe;
+// `pickedRunId` names the run whose image is the step's output. Picking is part of undo history.
+export type PromptStep = { kind: 'prompt'; name: string; prompt: string; pickedRunId?: string };
+export type StyleStep = { kind: 'style'; pickedRunId?: string } & Recipe;
 export type Step = PromptStep | StyleStep;
 export type StepEdge = Edge<Step, 'step'> & { data: Step };
 export type Asset = { id: string; blob: Blob; filename: string; width: number; height: number };
 export type Graph = { nodes: ImageNode[]; edges: StepEdge[]; name: string };
-export type Project = Graph & { version: 1; viewport: Viewport };
+// Runs are results of paid work, so they live outside undo history. They are keyed by step (edge) id, newest first.
+export type Run = { id: string; inputAssetId: string; settingsKey: string; quality: 'draft' | 'final'; status: 'pending' | 'done' | 'failed'; assetId?: string; error?: string; createdAt: number };
+export type Runs = Record<string, Run[]>;
+export type Project = Graph & { version: 1; viewport: Viewport; runs?: Runs };
 
 export const emptyGraph = (): Graph => ({ name: 'Untitled journey', nodes: [], edges: [] });
 export const initialViewport: Viewport = { x: 80, y: 80, zoom: 0.9 };
 export const kindLabels: Record<NodeKind, string> = { original: 'Original', edit: 'Edit', variation: 'Variation' };
 
-export const newPromptStep = (prompt = ''): PromptStep => ({ kind: 'prompt', name: '', prompt, appliedPrompt: '' });
+export const newPromptStep = (prompt = ''): PromptStep => ({ kind: 'prompt', name: '', prompt });
 // An empty name means the badge follows the preset, so switching styles keeps the label accurate.
 export const newStyleStep = (preset: PresetId = 'watercolor'): StyleStep => ({ kind: 'style', ...newRecipe(preset), name: '' });
 export function switchPreset(step: StyleStep, preset: PresetId): StyleStep {
@@ -55,37 +58,59 @@ export function validateConnection(graph: Graph, source: string, target: string,
   return null;
 }
 
-// Processor boundary: a later adapter (for example OpenAI image editing for prompt steps) returns a new asset id.
-export interface ImageProcessor { process(inputAssetId: string, step: Step): string | Promise<string> }
-export const passThroughProcessor: ImageProcessor = { process: inputAssetId => inputAssetId };
+export type ProcessRequest = { input: Asset; step: Step; quality: Run['quality'] };
+// Processor boundary. It returns the output image as an asset. The pass-through processor returns the input.
+export interface ImageProcessor { process(request: ProcessRequest): Promise<Asset> }
+export const passThroughProcessor: ImageProcessor = { process: async ({ input }) => input };
 
-export type NodeImage = { status: 'ready'; assetId: string } | { status: 'pending' } | { status: 'missing' } | { status: 'failed'; message: string };
-
-export function processingKey(inputAssetId: string, step: Step): string {
-  if (step.kind === 'prompt') return `${inputAssetId}|prompt|${step.appliedPrompt}`;
-  return `${inputAssetId}|style|${step.preset}|${JSON.stringify(step.settings[step.preset] ?? null)}`;
+// The settings that affect a step's output. The step name does not.
+export function settingsKey(step: Step): string {
+  if (step.kind === 'prompt') return JSON.stringify(['prompt', step.prompt.trim()]);
+  return JSON.stringify(['style', step.preset, step.settings[step.preset] ?? null]);
 }
 
-export function resolveImages(graph: Graph, run: (inputAssetId: string, step: Step) => NodeImage): Map<string, NodeImage> {
-  const result = new Map<string, NodeImage>(), visiting = new Set<string>();
+export type NodeStatus = {
+  assetId?: string;      // the image shown on the card
+  stale: boolean;        // the image was made from an older input or older settings
+  ready: boolean;        // the image is current, so steps after this node can run
+  pending: boolean;      // a run of this node's step is in progress
+  error?: string;        // the latest run failed
+  hasInput: boolean;     // an incoming step exists (always false for originals)
+  inputAssetId?: string; // the current input image, when the input is ready
+  blockedBy?: string;    // id of the node to run first
+  canRun: boolean;
+};
+
+export function resolveNodes(graph: Graph, runs: Runs): Map<string, NodeStatus> {
+  const result = new Map<string, NodeStatus>(), visiting = new Set<string>();
   const nodes = new Map(graph.nodes.map(n => [n.id, n]));
   const incoming = new Map(graph.edges.map(e => [e.target, e]));
-  function resolve(id: string): NodeImage {
+  const blank: NodeStatus = { stale: false, ready: false, pending: false, hasInput: false, canRun: false };
+  function resolve(id: string): NodeStatus {
     const known = result.get(id);
     if (known) return known;
-    if (visiting.has(id)) return { status: 'missing' };
+    if (visiting.has(id)) return blank;
     visiting.add(id);
     const node = nodes.get(id), edge = incoming.get(id);
-    let image: NodeImage = { status: 'missing' };
-    if (node?.data.kind === 'original') { if (node.data.assetId) image = { status: 'ready', assetId: node.data.assetId }; }
+    let status = blank;
+    if (node?.data.kind === 'original') status = { ...blank, assetId: node.data.assetId, ready: !!node.data.assetId };
     else if (edge) {
-      const input = resolve(edge.source);
-      if (input.status === 'ready') image = run(input.assetId, edge.data);
-      else if (input.status === 'pending') image = input;
+      const input = resolve(edge.source), stepRuns = runs[edge.id] ?? [];
+      const picked = stepRuns.find(r => r.id === edge.data.pickedRunId && r.status === 'done' && r.assetId);
+      const stale = !!picked && (input.stale || picked.inputAssetId !== input.assetId || picked.settingsKey !== settingsKey(edge.data));
+      const pending = stepRuns.some(r => r.status === 'pending');
+      status = {
+        assetId: picked?.assetId, stale, pending, hasInput: true,
+        ready: !!picked && !stale && !pending,
+        error: stepRuns[0]?.status === 'failed' ? stepRuns[0].error : undefined,
+        inputAssetId: input.ready ? input.assetId : undefined,
+        blockedBy: input.ready ? undefined : edge.source,
+        canRun: input.ready && !pending,
+      };
     }
     visiting.delete(id);
-    result.set(id, image);
-    return image;
+    result.set(id, status);
+    return status;
   }
   graph.nodes.forEach(n => resolve(n.id));
   return result;
@@ -102,7 +127,9 @@ export function cleanGraph(graph: Graph): Graph {
     edges: graph.edges.map(e => ({ id: e.id, type: 'step', source: e.source, target: e.target, data: structuredClone(e.data) })),
   };
 }
-export function serializeProject(graph: Graph, viewport: Viewport): Project { return { ...cleanGraph(graph), version: 1, viewport: { ...viewport } }; }
+export function serializeProject(graph: Graph, viewport: Viewport, runs: Runs = {}): Project {
+  return { ...cleanGraph(graph), version: 1, viewport: { ...viewport }, runs: structuredClone(runs) };
+}
 
 // Nodes snap to columns 450px apart, which leaves room for an edge badge between 260px cards.
 // The 20px row step lines cards up loosely without pinning them in place.
@@ -153,6 +180,7 @@ export function duplicateStep(graph: Graph, nodeId: string) {
   if (!edge) return null;
   const step = structuredClone(edge.data);
   if (step.name.trim()) step.name = `${step.name} copy`;
+  delete step.pickedRunId;
   return addStep(graph, edge.source, step);
 }
 
@@ -168,6 +196,17 @@ export function updateNode(graph: Graph, nodeId: string, update: (data: ImageDat
   return { ...graph, nodes: graph.nodes.map(n => n.id === nodeId ? { ...n, data: update(n.data) } : n) };
 }
 
-export function referencedAssets(graph: Graph): Set<string> {
-  return new Set(graph.nodes.flatMap(n => n.data.assetId ? [n.data.assetId] : []));
+export function referencedAssets(graph: Graph, runs: Runs = {}): Set<string> {
+  const fromRuns = Object.values(runs).flat().flatMap(r => r.assetId ? [r.assetId] : []);
+  return new Set([...graph.nodes.flatMap(n => n.data.assetId ? [n.data.assetId] : []), ...fromRuns]);
 }
+
+// Keeps runs of steps that still exist, and marks runs that were cut off by a reload as failed.
+export function loadedRuns(graph: Graph, runs: Runs = {}): Runs {
+  const edges = new Set(graph.edges.map(e => e.id));
+  return Object.fromEntries(Object.entries(runs).filter(([id]) => edges.has(id)).map(([id, list]) => [id,
+    list.map(r => r.status === 'pending' ? { ...r, status: 'failed' as const, error: 'Interrupted before it finished.' } : r)]));
+}
+
+export const newRun = (inputAssetId: string, step: Step): Run =>
+  ({ id: crypto.randomUUID(), inputAssetId, settingsKey: settingsKey(step), quality: 'draft', status: 'pending', createdAt: Date.now() });

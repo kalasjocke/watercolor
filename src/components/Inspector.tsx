@@ -58,22 +58,19 @@ function StepHeader({ graph, edge, history, kind }: { graph: Graph; edge: StepEd
 }
 
 function PromptInspector({ graph, edge, step, history, autoFocus }: { graph: Graph; edge: StepEdge; step: PromptStep; history: History; autoFocus: boolean }) {
+  const { nodes, actions } = useCanvas();
   const setPrompt = (prompt: string) => (g: Graph) => updateStep(g, edge.id, s => ({ ...s, prompt }));
-  const changed = step.prompt !== step.appliedPrompt;
-  const canGenerate = step.prompt.trim() !== '' && changed;
-  const generate = () => { if (canGenerate) history.commit(g => updateStep(g, edge.id, s => ({ ...s, appliedPrompt: (s as PromptStep).prompt }))); };
-  const status = !step.appliedPrompt ? 'Not generated yet.' : changed ? 'The prompt changed since the last generate.' : 'Generated from this prompt.';
+  const empty = !step.prompt.trim();
+  const runIfReady = () => { if (!empty && nodes.get(edge.target)?.canRun) actions.runStep(edge.id); };
   return (
     <div className="inspector-body">
       <StepHeader graph={graph} edge={edge} history={history} kind="Prompt step" />
       <TextField label="Prompt" multiline value={step.prompt} placeholder="Remove the black car in the background" history={history}
-        autoFocus={autoFocus} onSubmit={generate} onChange={value => history.set(setPrompt(value))} />
+        autoFocus={autoFocus} onSubmit={runIfReady} onChange={value => history.set(setPrompt(value))} />
       <div className="chips">
         {examplePrompts.map(prompt => <button key={prompt} className="chip" onClick={() => history.commit(setPrompt(prompt))}>{prompt}</button>)}
       </div>
-      <button className="primary-button" disabled={!canGenerate} onClick={generate}>{step.appliedPrompt ? 'Regenerate' : 'Generate'}</button>
-      <p className="hint">{status} Press ⌘ Enter to generate.</p>
-      <PreviewNote>Preview only. Image editing is not connected, so the edit shows its input image.</PreviewNote>
+      <RunPanel graph={graph} edge={edge} disabledReason={empty ? 'Write a prompt first.' : undefined} shortcut />
     </div>
   );
 }
@@ -96,6 +93,7 @@ function StyleInspector({ graph, edge, step, history }: { graph: Graph; edge: St
         </select>
       </label>
       <p className="hint">{preset.description}</p>
+      <RunPanel graph={graph} edge={edge} />
       <section className="group"><h3>Shared</h3>{sharedControls.map(slider)}</section>
       <section className="group"><h3>{preset.short}</h3>{preset.controls.map(slider)}</section>
       <section className="group">
@@ -109,7 +107,6 @@ function StyleInspector({ graph, edge, step, history }: { graph: Graph; edge: St
         ))}
       </section>
       <button className="secondary-button" onClick={() => history.commit(withSettings(() => defaultSettings(step.preset)))}>Reset settings</button>
-      <PreviewNote>Preview only. Image processing is not connected, so the variation shows its input image.</PreviewNote>
     </div>
   );
 }
@@ -129,8 +126,8 @@ function Slider({ control, value, history, onChange }: { control: Control; value
 }
 
 function NodeInspector({ graph, node, history }: { graph: Graph; node: ImageNode; history: History }) {
-  const { images, assets, incoming, actions } = useCanvas();
-  const image = images.get(node.id), asset = image?.status === 'ready' ? assets.get(image.assetId) : undefined;
+  const { nodes, assets, incoming, actions } = useCanvas();
+  const assetId = nodes.get(node.id)?.assetId, asset = assetId ? assets.get(assetId) : undefined;
   const input = incoming.get(node.id), source = input && graph.nodes.find(n => n.id === input.source);
   return (
     <div className="inspector-body">
@@ -179,6 +176,50 @@ function CanvasHelp() {
         <li>⌘Z undoes, ⇧⌘Z redoes, Delete removes the selection.</li>
       </ul>
     </div>
+  );
+}
+
+// Run and Run again, the step's state, and its earlier runs to pick from.
+function RunPanel({ graph, edge, disabledReason, shortcut }: { graph: Graph; edge: StepEdge; disabledReason?: string; shortcut?: boolean }) {
+  const { nodes, runs, assets, actions, live } = useCanvas();
+  const status = nodes.get(edge.target);
+  if (!status) return null;
+  const list = runs[edge.id] ?? [];
+  const blocker = status.blockedBy ? graph.nodes.find(n => n.id === status.blockedBy)?.data.name ?? 'the step before' : undefined;
+  const hint = disabledReason
+    ?? (status.pending ? 'Making a draft. This can take up to a minute.'
+    : blocker ? `Run ${blocker} first.`
+    : status.stale ? 'The input or settings changed since this draft. Run to update it.'
+    : status.ready ? 'Up to date. Run again to try another draft.'
+    : status.error ? `The last run failed: ${status.error}`
+    : 'Not run yet.');
+  return (
+    <>
+      <button className="primary-button" disabled={!status.canRun || !!disabledReason} onClick={() => actions.runStep(edge.id)}>
+        {status.pending && <span className="spinner" />}{status.pending ? 'Generating…' : status.ready ? 'Run again' : 'Run'}
+      </button>
+      <p className="hint">{hint}{shortcut && !disabledReason && !status.pending ? ' Press ⌘ Enter to run.' : ''}</p>
+      {list.length > 0 && (
+        <section className="group">
+          <h3>Runs</h3>
+          <div className="run-strip">
+            {list.map(run => {
+              const asset = run.assetId ? assets.get(run.assetId) : undefined;
+              const picked = run.id === edge.data.pickedRunId;
+              const when = new Date(run.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              return (
+                <button key={run.id} className={`run-tile ${run.status}${picked ? ' picked' : ''}`} disabled={run.status !== 'done' || picked}
+                  aria-pressed={picked} title={run.status === 'failed' ? `Failed: ${run.error}` : `${picked ? 'Picked' : 'Pick this run'} · ${when}`}
+                  onClick={() => actions.pickRun(edge.id, run.id)}>
+                  {run.status === 'pending' ? <span className="spinner" /> : asset ? <img src={asset.url} alt={`Run at ${when}`} /> : <span>!</span>}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {!live && <PreviewNote>Preview mode. No OpenAI key is set, so a run copies its input image.</PreviewNote>}
+    </>
   );
 }
 

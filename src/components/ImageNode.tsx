@@ -1,25 +1,33 @@
 import { useRef, useState, type MouseEvent } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import { useCanvas } from '../canvas-context';
-import { kindLabels, type ImageNode, type NodeImage } from '../lib/graph';
+import { kindLabels, type ImageNode, type NodeStatus } from '../lib/graph';
 import { Icon } from './Icons';
 import { MenuButton, type MenuItem } from './Menu';
 
-function placeholderText(image: NodeImage | undefined, hasInput: boolean) {
-  if (image?.status === 'pending') return 'Generating…';
-  if (image?.status === 'failed') return image.message;
-  if (image?.status === 'ready') return 'Image unavailable';
-  return hasInput ? 'Input image missing' : 'Connect an input';
+// What an output card shows before it has an image.
+function emptyText(status: NodeStatus, blockerName: string | undefined) {
+  if (!status.hasInput) return 'Connect an input';
+  if (status.pending) return 'Making a draft…';
+  if (status.error) return `Run failed: ${status.error}`;
+  if (status.assetId) return 'Image unavailable';
+  if (status.blockedBy) return `Run ${blockerName ?? 'the step before'} first`;
+  return 'Not run yet';
 }
 
 export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
-  const { images, assets, incoming, actions } = useCanvas();
-  const image = images.get(id);
-  const asset = image?.status === 'ready' ? assets.get(image.assetId) : undefined;
+  const { nodes, assets, incoming, actions } = useCanvas();
+  const flow = useReactFlow<ImageNode>();
+  const status = nodes.get(id) ?? { stale: false, ready: false, pending: false, hasInput: false, canRun: false };
+  const asset = status.assetId ? assets.get(status.assetId) : undefined;
+  const edge = incoming.get(id);
+  const blockerName = status.blockedBy ? flow.getNode(status.blockedBy)?.data.name : undefined;
   const [renaming, setRenaming] = useState(false);
   const cancelRename = useRef(false);
   // Card buttons stop the click so the node's own click handler does not replace the selection they make.
   const run = (action: () => void) => (event: MouseEvent) => { event.stopPropagation(); action(); };
+  const runButton = (label: string) => edge && status.canRun
+    ? <button className="pill-button nodrag" onClick={run(() => actions.runStep(edge.id))}>{label}</button> : null;
 
   const items: MenuItem[] = [
     { label: 'Rename', onSelect: () => setRenaming(true) },
@@ -34,9 +42,23 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
     <div className={`image-card${selected ? ' selected' : ''}`}>
       {data.kind !== 'original' && <Handle type="target" position={Position.Left} />}
       <div className="preview" onDoubleClick={() => asset && actions.openViewer(id)} title={asset ? 'Double-click to view larger' : undefined}>
-        {asset
-          ? <img src={asset.url} alt={data.name} draggable={false} />
-          : <div className={`placeholder ${image?.status ?? 'missing'}`}><Icon name={image?.status === 'pending' ? 'prompt' : 'link'} size={20} />{placeholderText(image, incoming.has(id))}</div>}
+        {asset && data.kind === 'original' && <img src={asset.url} alt={data.name} draggable={false} />}
+        {asset && data.kind !== 'original' && <>
+          <img src={asset.url} alt={data.name} draggable={false} className={status.stale ? 'stale' : undefined} />
+          {(status.pending || status.stale || status.error) && <div className="preview-status">
+            <span className={`status-pill${status.error && !status.pending ? ' failed' : ''}`} title={status.error}>
+              {status.pending ? <><span className="spinner" />Generating…</> : status.stale ? 'Out of date' : 'Run failed'}
+            </span>
+            {!status.pending && runButton(status.stale ? 'Run' : 'Retry')}
+          </div>}
+        </>}
+        {!asset && (data.kind === 'original'
+          ? <div className="placeholder">Image unavailable</div>
+          : <div className={`placeholder${status.error && !status.pending ? ' failed' : ''}`}>
+              {status.pending ? <span className="spinner large" /> : <Icon name={status.hasInput ? 'style' : 'link'} size={20} />}
+              <span>{emptyText(status, blockerName)}</span>
+              {!status.pending && runButton(status.error ? 'Retry' : 'Run')}
+            </div>)}
       </div>
       <div className="card-body">
         <div className="card-title-row">

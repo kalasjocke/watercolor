@@ -13,12 +13,11 @@ import { Toolbar } from './components/Toolbar';
 import { Viewer } from './components/Viewer';
 import { readImageFile } from './lib/assets';
 import {
-  addOriginal, addStep, duplicateStep, newPromptStep, newStyleStep, passThroughProcessor, removeItems, selectOnly, serializeProject,
-  snapGrid, stepKindFor, updateNode, validateConnection, type Graph, type ImageNode, type Step, type StepEdge,
+  addOriginal, addStep, duplicateStep, newPromptStep, newRun, newStyleStep, passThroughProcessor, removeItems, resolveNodes, selectOnly, serializeProject,
+  snapGrid, stepKindFor, stepLabel, updateNode, updateStep, validateConnection, type Graph, type ImageNode, type ImageProcessor, type Run, type Runs, type Step, type StepEdge,
 } from './lib/graph';
 import { saveAssets, saveProject } from './lib/storage';
 import { useDocument } from './useDocument';
-import { useProcessedImages } from './useProcessedImages';
 
 const nodeTypes = { image: ImageNodeView };
 // Bottom padding keeps fitted nodes clear of the canvas controls.
@@ -27,7 +26,10 @@ const edgeTypes = { step: StepEdgeView };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const isTyping = (target: EventTarget | null) => target instanceof HTMLElement && !!target.closest('input, textarea, select, [contenteditable="true"]');
 
-export type StudioProps = { graph: Graph; viewport: Viewport; assets: Map<string, LoadedAsset>; storageError?: string };
+export type StudioProps = { graph: Graph; viewport: Viewport; assets: Map<string, LoadedAsset>; runs: Runs; storageError?: string };
+
+const processor: ImageProcessor = passThroughProcessor;
+const live = false;
 
 function useToasts() {
   const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
@@ -41,18 +43,18 @@ function useToasts() {
 
 // Saves the project shortly after it changes, and only speaks up when a save fails.
 // Selection and other view-only changes are not saves.
-function useAutosave(graph: Graph, viewport: Viewport, blocked: string | undefined, notify: (message: string) => void) {
-  const saved = useRef(JSON.stringify(serializeProject(graph, viewport)));
+function useAutosave(graph: Graph, viewport: Viewport, runs: Runs, blocked: string | undefined, notify: (message: string) => void) {
+  const saved = useRef(JSON.stringify(serializeProject(graph, viewport, runs)));
   useEffect(() => {
     if (blocked) return;
-    const project = serializeProject(graph, viewport), json = JSON.stringify(project);
+    const project = serializeProject(graph, viewport, runs), json = JSON.stringify(project);
     if (json === saved.current) return;
     const timer = setTimeout(() => saveProject(project).then(
       () => { saved.current = json; },
       error => notify(`Changes couldn't be saved locally: ${errorText(error)} They stay open in this tab.`),
     ), 400);
     return () => clearTimeout(timer);
-  }, [graph, viewport, blocked, notify]);
+  }, [graph, viewport, runs, blocked, notify]);
 }
 
 export function Studio(props: StudioProps) {
@@ -67,8 +69,13 @@ export function Studio(props: StudioProps) {
   const reconnecting = useRef<string | null>(null);
   const flow = useReactFlow<ImageNode, StepEdge>();
   const { toasts, notify, dismiss } = useToasts();
-  const images = useProcessedImages(graph, passThroughProcessor);
-  useAutosave(graph, viewport, props.storageError, notify);
+  const [runs, setRuns] = useState(props.runs);
+  // Run callbacks finish later, so they read the latest runs and assets through refs.
+  const runsRef = useRef(runs), assetsRef = useRef(assets);
+  runsRef.current = runs;
+  assetsRef.current = assets;
+  const nodes = useMemo(() => resolveNodes(graph, runs), [graph, runs]);
+  useAutosave(graph, viewport, runs, props.storageError, notify);
   const incoming = useMemo(() => new Map(graph.edges.map(e => [e.target, e])), [graph.edges]);
 
   useEffect(() => { if (props.storageError) notify(props.storageError); }, [props.storageError, notify]);
@@ -96,6 +103,34 @@ export function Studio(props: StudioProps) {
     setInspectorOpen(true);
   }, [history, notify]);
 
+  const updateRun = useCallback((stepId: string, runId: string, patch: Partial<Run>) => {
+    setRuns(current => ({ ...current, [stepId]: (current[stepId] ?? []).map(r => r.id === runId ? { ...r, ...patch } : r) }));
+  }, []);
+
+  // Starts a run of a step on its current input, and picks the result when it arrives.
+  const runStep = useCallback(async (edgeId: string) => {
+    const g = history.current(), edge = g.edges.find(e => e.id === edgeId);
+    const status = edge && resolveNodes(g, runsRef.current).get(edge.target);
+    if (!edge || !status?.canRun || !status.inputAssetId) return;
+    const input = assetsRef.current.get(status.inputAssetId);
+    if (!input) return notify('The input image is missing.');
+    const run = newRun(input.id, edge.data);
+    setRuns(current => ({ ...current, [edgeId]: [run, ...(current[edgeId] ?? [])] }));
+    try {
+      const output = await processor.process({ input, step: edge.data, quality: 'draft' });
+      if (output.id !== input.id) {
+        try { await saveAssets([output]); }
+        catch (error) { notify(`The draft couldn't be saved locally: ${errorText(error)} It stays open in this tab.`); }
+        setAssets(current => new Map(current).set(output.id, { ...output, url: URL.createObjectURL(output.blob) }));
+      }
+      updateRun(edgeId, run.id, { status: 'done', assetId: output.id });
+      history.commit(current => updateStep(current, edgeId, step => ({ ...step, pickedRunId: run.id })));
+    } catch (error) {
+      updateRun(edgeId, run.id, { status: 'failed', error: errorText(error) });
+      notify(`${stepLabel(edge.data)} failed: ${errorText(error)}`);
+    }
+  }, [history, notify, updateRun]);
+
   const deleteSelection = useCallback(() => {
     const g = history.current();
     const nodes = new Set(g.nodes.filter(n => n.selected).map(n => n.id)), edges = new Set(g.edges.filter(e => e.selected).map(e => e.id));
@@ -113,7 +148,9 @@ export function Studio(props: StudioProps) {
     deleteNode: nodeId => history.commit(g => removeItems(g, new Set([nodeId]), new Set())),
     selectEdge: edgeId => { history.set(g => selectOnly(g, { edges: [edgeId] })); setInspectorOpen(true); },
     openViewer: setViewerId,
-  }), [createStep, history, reveal]);
+    runStep: edgeId => { runStep(edgeId); },
+    pickRun: (edgeId, runId) => history.commit(g => updateStep(g, edgeId, step => ({ ...step, pickedRunId: runId }))),
+  }), [createStep, history, reveal, runStep]);
 
   const importFiles = useCallback(async (files: File[], at?: XYPosition) => {
     const loaded: LoadedAsset[] = [];
@@ -194,9 +231,9 @@ export function Studio(props: StudioProps) {
 
   const edges = useMemo(() => graph.edges.map(e => ({ ...e, markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: e.selected ? '#2563eb' : '#9aa3b2' } })), [graph.edges]);
   const viewerNode = viewerId ? graph.nodes.find(n => n.id === viewerId) : undefined;
-  const viewerImage = viewerId ? images.get(viewerId) : undefined;
-  const viewerAsset = viewerImage?.status === 'ready' ? assets.get(viewerImage.assetId) : undefined;
-  const context = useMemo(() => ({ images, assets, incoming, actions }), [images, assets, incoming, actions]);
+  const viewerAssetId = viewerId ? nodes.get(viewerId)?.assetId : undefined;
+  const viewerAsset = viewerAssetId ? assets.get(viewerAssetId) : undefined;
+  const context = useMemo(() => ({ nodes, runs, assets, incoming, actions, live }), [nodes, runs, assets, incoming, actions]);
 
   return (
     <CanvasContext.Provider value={context}>
