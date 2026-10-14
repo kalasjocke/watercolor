@@ -111,8 +111,8 @@ export class GpuAdjuster {
     gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
   }
 
-  // Uploads each source once and keeps the few most recent on the GPU, so slider moves only redraw.
-  private texture(source: Source): WebGLTexture {
+  // Uploads each source once and keeps the most recent on the GPU, so slider moves only redraw.
+  texture(source: Source): WebGLTexture {
     const gl = this.gl;
     let texture = this.textures.get(source);
     if (texture) return texture;
@@ -122,7 +122,7 @@ export class GpuAdjuster {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     for (const [key, value] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, key, value);
     this.textures.set(source, texture);
-    if (this.textures.size > 4) {
+    if (this.textures.size > 8) {
       const [oldest, old] = this.textures.entries().next().value!;
       gl.deleteTexture(old);
       this.textures.delete(oldest);
@@ -157,34 +157,40 @@ export class GpuAdjuster {
 let shared: GpuAdjuster | undefined;
 export const gpuAdjuster = () => (shared ??= new GpuAdjuster());
 
+// Full renders feed AI runs and the viewer. Cards show previews, which are fast enough to redraw on every slider move.
 export const adjustLongSide = 2048;
+export const previewLongSide = 640;
 
-// Decoded inputs, scaled to at most adjustLongSide, kept per input so slider moves skip decoding.
-const decoded = new Map<Blob, Promise<ImageBitmap>>();
-function decode(blob: Blob): Promise<ImageBitmap> {
-  let bitmap = decoded.get(blob);
+// Decoded inputs, scaled to at most a long side, kept per input and size so slider moves skip decoding.
+const decoded = new WeakMap<Blob, Map<number, Promise<ImageBitmap>>>();
+function decode(blob: Blob, longSide: number): Promise<ImageBitmap> {
+  const sizes = decoded.get(blob) ?? new Map<number, Promise<ImageBitmap>>();
+  decoded.set(blob, sizes);
+  let bitmap = sizes.get(longSide);
   if (!bitmap) {
     bitmap = (async () => {
       const full = await createImageBitmap(blob);
-      const scale = Math.min(1, adjustLongSide / Math.max(full.width, full.height));
+      const scale = Math.min(1, longSide / Math.max(full.width, full.height));
       if (scale === 1) return full;
       const scaled = await createImageBitmap(full, { resizeWidth: Math.round(full.width * scale), resizeHeight: Math.round(full.height * scale), resizeQuality: 'high' });
       full.close();
       return scaled;
     })();
-    decoded.set(blob, bitmap);
-    if (decoded.size > 8) {
-      const [oldest, old] = decoded.entries().next().value!;
-      decoded.delete(oldest);
-      old.then(b => b.close(), () => {});
-    }
+    bitmap.catch(() => sizes.delete(longSide));
+    sizes.set(longSide, bitmap);
   }
   return bitmap;
 }
 
-// Renders an adjusted copy of an image on the GPU, as a JPEG of at most adjustLongSide.
-export async function renderAdjusted(blob: Blob, values: AdjustValues): Promise<{ blob: Blob; width: number; height: number }> {
-  const source = await decode(blob), gpu = gpuAdjuster();
+// Decodes an input and uploads it to the GPU ahead of the first slider move.
+export async function prepareAdjust(blob: Blob, longSide = previewLongSide): Promise<void> {
+  gpuAdjuster().texture(await decode(blob, longSide));
+}
+
+// Renders an adjusted copy of an image on the GPU, as a JPEG of at most `longSide`.
+export async function renderAdjusted(blob: Blob, values: AdjustValues, longSide = adjustLongSide): Promise<{ blob: Blob; width: number; height: number }> {
+  const source = await decode(blob, longSide), gpu = gpuAdjuster();
+  // convertToBlob copies the canvas when it is called, so another draw cannot slip in between.
   gpu.draw(source, values);
   return { blob: await gpu.canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 }), width: source.width, height: source.height };
 }

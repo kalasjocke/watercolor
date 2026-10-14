@@ -239,7 +239,15 @@ export function Studio(props: StudioProps) {
   const edges = useMemo(() => graph.edges.map(e => ({ ...e, markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: e.selected ? '#2563eb' : '#9aa3b2' } })), [graph.edges]);
   const viewerNode = viewerId ? graph.nodes.find(n => n.id === viewerId) : undefined;
   const viewerAssetId = viewerId ? nodes.get(viewerId)?.assetId : undefined;
-  const viewerAsset = viewerAssetId ? allAssets.get(viewerAssetId) : undefined;
+  // Cards show previews of adjusted images, so the viewer asks for the full-size render.
+  const [viewerFull, setViewerFull] = useState<LoadedAsset>();
+  useEffect(() => {
+    if (!viewerAssetId || allAssets.get(viewerAssetId) === assets.get(viewerAssetId)) return;
+    let current = true;
+    ensureAsset(viewerAssetId).then(asset => { if (current) setViewerFull(asset); }, () => {});
+    return () => { current = false; };
+  }, [viewerAssetId, ensureAsset]);
+  const viewerAsset = viewerAssetId ? (viewerFull?.id === viewerAssetId ? viewerFull : allAssets.get(viewerAssetId)) : undefined;
   const context = useMemo(() => ({ nodes, runs, assets: allAssets, incoming, actions, live }), [nodes, runs, allAssets, incoming, actions]);
 
   return (

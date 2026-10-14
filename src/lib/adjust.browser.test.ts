@@ -1,6 +1,6 @@
 // Runs in Chrome (Vitest browser mode), because the adjustments are a WebGL2 shader.
 import { describe, expect, it } from 'vitest';
-import { defaultAdjust, gpuAdjuster, renderAdjusted, type AdjustValues } from './adjust';
+import { defaultAdjust, gpuAdjuster, prepareAdjust, previewLongSide, renderAdjusted, type AdjustValues } from './adjust';
 
 // Draws a row of RGB pixels through the shader and returns the adjusted RGB values.
 function adjust(pixels: [number, number, number][], changes: Partial<AdjustValues>) {
@@ -69,6 +69,16 @@ describe('GPU adjustments', () => {
     gpu.draw(new ImageData(new Uint8ClampedArray(corners.flatMap(c => [...c, 255])), 2, 2), defaultAdjust());
     const out = gpu.pixels();
     corners.forEach((c, i) => near([out[i * 4], out[i * 4 + 1], out[i * 4 + 2]], c));
+  });
+  it('renders previews at the preview size from a prepared input', async () => {
+    const canvas = new OffscreenCanvas(3000, 2000);
+    canvas.getContext('2d')!.fillRect(0, 0, 3000, 2000);
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    await prepareAdjust(blob);
+    const preview = await renderAdjusted(blob, { ...defaultAdjust(), contrast: 40 }, previewLongSide);
+    expect([preview.width, preview.height]).toEqual([640, 427]);
+    const full = await renderAdjusted(blob, { ...defaultAdjust(), contrast: 40 });
+    expect([full.width, full.height]).toEqual([2048, 1365]);
   });
   it('renders an adjusted JPEG the right way up and at most 2048px', async () => {
     // A tall image: red on top, blue below.

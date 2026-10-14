@@ -99,6 +99,7 @@ export type NodeStatus = {
   blockedBy?: string;    // id of the node to run first
   canRun: boolean;
   derivedFrom?: { inputAssetId: string; values: AdjustValues }; // how to compute an adjusted image
+  adjusts?: string;      // for adjust steps, the input image, even at neutral settings
 };
 
 export function resolveNodes(graph: Graph, runs: Runs): Map<string, NodeStatus> {
@@ -123,6 +124,7 @@ export function resolveNodes(graph: Graph, runs: Runs): Map<string, NodeStatus> 
         inputAssetId: input.ready ? input.assetId : undefined,
         blockedBy: input.assetId ? undefined : edge.source,
         derivedFrom: input.assetId && assetId !== input.assetId ? { inputAssetId: input.assetId, values: edge.data.values } : undefined,
+        adjusts: input.assetId,
       };
     }
     else if (edge) {
