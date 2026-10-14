@@ -56,7 +56,7 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
           ? <div className="placeholder">Image unavailable</div>
           : <div className={`placeholder${status.error && !status.pending ? ' failed' : ''}`}>
               {status.pending ? <span className="spinner large" /> : <Icon name={status.hasInput ? 'style' : 'link'} size={20} />}
-              <span>{emptyText(status, blockerName)}</span>
+              <span className="placeholder-text" title={emptyText(status, blockerName)}>{emptyText(status, blockerName)}</span>
               {!status.pending && runButton(status.error ? 'Retry' : 'Run')}
             </div>)}
       </div>

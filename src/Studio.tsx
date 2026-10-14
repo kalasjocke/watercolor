@@ -11,7 +11,9 @@ import { Menu } from './components/Menu';
 import { StepEdgeView } from './components/StepEdge';
 import { Toolbar } from './components/Toolbar';
 import { Viewer } from './components/Viewer';
+import { openAI } from './config';
 import { readImageFile } from './lib/assets';
+import { createOpenAIProcessor } from './lib/openai';
 import {
   addOriginal, addStep, duplicateStep, newPromptStep, newRun, newStyleStep, passThroughProcessor, removeItems, resolveNodes, selectOnly, serializeProject,
   snapGrid, stepKindFor, stepLabel, updateNode, updateStep, validateConnection, type Graph, type ImageNode, type ImageProcessor, type Run, type Runs, type Step, type StepEdge,
@@ -28,8 +30,8 @@ const isTyping = (target: EventTarget | null) => target instanceof HTMLElement &
 
 export type StudioProps = { graph: Graph; viewport: Viewport; assets: Map<string, LoadedAsset>; runs: Runs; storageError?: string };
 
-const processor: ImageProcessor = passThroughProcessor;
-const live = false;
+const live = openAI.enabled;
+const processor: ImageProcessor = live ? createOpenAIProcessor({ model: openAI.model }) : passThroughProcessor;
 
 function useToasts() {
   const [toasts, setToasts] = useState<{ id: number; message: string }[]>([]);
@@ -282,7 +284,9 @@ function CanvasControls() {
       <button className="icon-button" aria-label="Zoom out" title="Zoom out" onClick={() => flow.zoomOut({ duration: 200 })}><Icon name="minus" /></button>
       <button className="icon-button" aria-label="Zoom in" title="Zoom in" onClick={() => flow.zoomIn({ duration: 200 })}><Icon name="plus" /></button>
       <button className="icon-button" aria-label="Fit all" title="Fit all" onClick={() => flow.fitView({ padding: fitPadding, duration: 300 })}><Icon name="fit" /></button>
-      <span className="preview-pill" title="Image processing is not connected. Outputs show their input image."><span className="dot" />Preview mode</span>
+      {openAI.enabled
+        ? <span className="preview-pill" title={`Runs make low-quality drafts with ${openAI.model}.`}><span className="dot live" />OpenAI drafts</span>
+        : <span className="preview-pill" title="No OpenAI key is set, so a run copies its input image."><span className="dot" />Preview mode</span>}
     </Panel>
   );
 }

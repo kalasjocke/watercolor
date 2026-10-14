@@ -1,5 +1,6 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useCanvas } from '../canvas-context';
+import { openAI } from '../config';
 import { kindLabels, stepLabel, switchPreset, updateNode, updateStep, type Graph, type ImageNode, type PromptStep, type StepEdge, type StyleStep } from '../lib/graph';
 import { defaultSettings, getSettings, preserveLabels, presets, sharedControls, type Control, type PresetId, type PreserveKey } from '../lib/presets';
 import type { History } from '../useDocument';
@@ -218,7 +219,9 @@ function RunPanel({ graph, edge, disabledReason, shortcut }: { graph: Graph; edg
           </div>
         </section>
       )}
-      {!live && <PreviewNote>Preview mode. No OpenAI key is set, so a run copies its input image.</PreviewNote>}
+      {live
+        ? <p className="hint">Each run is one paid {openAI.model} call that makes a low-quality draft of about 1024px.</p>
+        : <PreviewNote>Preview mode. No OpenAI key is set, so a run copies its input image. Add OPENAI_API_KEY to .env.local and restart the dev server.</PreviewNote>}
     </>
   );
 }
