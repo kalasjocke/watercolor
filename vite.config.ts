@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       __OPENAI_ENABLED__: JSON.stringify(Boolean(key)),
-      __OPENAI_IMAGE_MODEL__: JSON.stringify(env.OPENAI_IMAGE_MODEL || 'gpt-image-2'),
+      __OPENAI_IMAGE_MODEL__: JSON.stringify(env.OPENAI_IMAGE_MODEL || 'gpt-image-2.5-sunburst'),
     },
     server: { proxy },
     preview: { proxy },
