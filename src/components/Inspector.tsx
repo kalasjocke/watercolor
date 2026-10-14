@@ -1,7 +1,8 @@
-import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
+import { startTransition, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useCanvas } from '../canvas-context';
 import { openAI } from '../config';
-import { colorControls, defaultAdjust, isIdentity, lightControls, type AdjustControl, type AdjustKey } from '../lib/adjust';
+import { colorControls, defaultAdjust, isIdentity, lightControls, type AdjustControl, type AdjustKey, type AdjustValues } from '../lib/adjust';
+import { publishLive } from '../livePreview';
 import { kindLabels, stepLabel, switchPreset, updateNode, updateStep, type AdjustStep, type Graph, type ImageNode, type PromptStep, type StepEdge, type StyleStep } from '../lib/graph';
 import { defaultSettings, getSettings, preserveLabels, presets, sharedControls, type Control, type PresetId, type PreserveKey } from '../lib/presets';
 import type { History } from '../useDocument';
@@ -138,11 +139,38 @@ function Slider({ control, value, history, onChange, min = 0 }: { control: Pick<
   );
 }
 
+// While a slider moves, its values live here and go straight to the card through the live channel. The graph,
+// and so the rest of the canvas, gets them at most once per frame, as a low-priority update.
 function AdjustInspector({ graph, edge, step, history }: { graph: Graph; edge: StepEdge; step: AdjustStep; history: History }) {
-  const setValue = (key: AdjustKey, value: number) => (g: Graph) => updateStep(g, edge.id, s => s.kind === 'adjust' ? { ...s, values: { ...s.values, [key]: value } } : s);
+  const [values, setValues] = useState(step.values);
+  const latest = useRef(step.values), dragging = useRef(false), pending = useRef<AdjustValues | null>(null), frame = useRef(0);
+  // Undo, redo and Reset all change the graph directly; follow them when no slider is moving.
+  useEffect(() => { if (!dragging.current) { latest.current = step.values; setValues(step.values); } }, [step.values]);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+  const flush = () => {
+    cancelAnimationFrame(frame.current);
+    frame.current = 0;
+    const next = pending.current;
+    pending.current = null;
+    if (next) history.set(g => updateStep(g, edge.id, s => s.kind === 'adjust' ? { ...s, values: next } : s));
+  };
+  const change = (key: AdjustKey, value: number) => {
+    const next = { ...latest.current, [key]: value };
+    latest.current = next;
+    setValues(next);
+    publishLive(edge.id, next);
+    pending.current = next;
+    if (!frame.current) frame.current = requestAnimationFrame(() => { frame.current = 0; startTransition(flush); });
+  };
+  // A drag is one undo step. Its last values reach the graph before the step is recorded.
+  const gestures: History = {
+    ...history,
+    beginGesture: () => { dragging.current = true; history.beginGesture(); },
+    endGesture: () => { flush(); dragging.current = false; publishLive(edge.id, undefined); history.endGesture(); },
+  };
   const slider = (control: AdjustControl) => (
-    <Slider key={control.key} control={control} min={-100} value={step.values[control.key] ?? 0} history={history}
-      onChange={value => history.set(setValue(control.key, value))} />
+    <Slider key={control.key} control={control} min={-100} value={values[control.key] ?? 0} history={gestures}
+      onChange={value => change(control.key, value)} />
   );
   return (
     <div className="inspector-body">
@@ -150,7 +178,7 @@ function AdjustInspector({ graph, edge, step, history }: { graph: Graph; edge: S
       <p className="hint">Changes apply right away in the browser. They cost nothing and use no AI.</p>
       <section className="group"><h3>Light</h3>{lightControls.map(slider)}</section>
       <section className="group"><h3>Color</h3>{colorControls.map(slider)}</section>
-      <button className="secondary-button" disabled={isIdentity(step.values)}
+      <button className="secondary-button" disabled={isIdentity(values)}
         onClick={() => history.commit(g => updateStep(g, edge.id, s => s.kind === 'adjust' ? { ...s, values: defaultAdjust() } : s))}>Reset all</button>
     </div>
   );

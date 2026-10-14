@@ -163,6 +163,8 @@ export const previewLongSide = 640;
 
 // Decoded inputs, scaled to at most a long side, kept per input and size so slider moves skip decoding.
 const decoded = new WeakMap<Blob, Map<number, Promise<ImageBitmap>>>();
+// The same inputs once decoded, so a live draw can use them without waiting.
+const ready = new WeakMap<Blob, Map<number, ImageBitmap>>();
 function decode(blob: Blob, longSide: number): Promise<ImageBitmap> {
   const sizes = decoded.get(blob) ?? new Map<number, Promise<ImageBitmap>>();
   decoded.set(blob, sizes);
@@ -176,7 +178,7 @@ function decode(blob: Blob, longSide: number): Promise<ImageBitmap> {
       full.close();
       return scaled;
     })();
-    bitmap.catch(() => sizes.delete(longSide));
+    bitmap.then(done => { const sizes = ready.get(blob) ?? new Map<number, ImageBitmap>(); ready.set(blob, sizes); sizes.set(longSide, done); }, () => sizes.delete(longSide));
     sizes.set(longSide, bitmap);
   }
   return bitmap;
@@ -185,6 +187,18 @@ function decode(blob: Blob, longSide: number): Promise<ImageBitmap> {
 // Decodes an input and uploads it to the GPU ahead of the first slider move.
 export async function prepareAdjust(blob: Blob, longSide = previewLongSide): Promise<void> {
   gpuAdjuster().texture(await decode(blob, longSide));
+}
+
+// Draws an adjusted preview straight into a canvas on the page, synchronously. Returns false when the input is not
+// decoded yet; it is then decoded in the background, and the caller can draw again when `prepareAdjust` resolves.
+export function drawAdjusted(target: HTMLCanvasElement, blob: Blob, values: AdjustValues): boolean {
+  const source = ready.get(blob)?.get(previewLongSide);
+  if (!source) { decode(blob, previewLongSide).catch(() => {}); return false; }
+  const gpu = gpuAdjuster();
+  gpu.draw(source, values);
+  if (target.width !== source.width || target.height !== source.height) { target.width = source.width; target.height = source.height; }
+  (target.getContext('bitmaprenderer') as ImageBitmapRenderingContext).transferFromImageBitmap(gpu.canvas.transferToImageBitmap());
+  return true;
 }
 
 // Renders an adjusted copy of an image on the GPU, as a JPEG of at most `longSide`.

@@ -87,7 +87,10 @@ export function useAdjustedImages(nodes: Map<string, NodeStatus>, stored: Map<st
     const all = new Map([...stored, ...previews]);
     for (const [nodeId, status] of nodes) {
       const last = lastShown.current.get(nodeId);
-      if (status.derivedFrom && status.assetId && !all.has(status.assetId) && last) all.set(status.assetId, last);
+      if (!status.derivedFrom || !status.assetId || all.has(status.assetId)) continue;
+      // Before a card's first preview exists, it shows its input, so the card never drops back to a placeholder.
+      const fallback = last ?? (status.adjusts ? all.get(status.adjusts) : undefined);
+      if (fallback) all.set(status.assetId, fallback);
     }
     return all;
   }, [stored, previews, nodes]);

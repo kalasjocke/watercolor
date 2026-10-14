@@ -1,11 +1,43 @@
-import { useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import { useCanvas } from '../canvas-context';
 import { kindLabels, type ImageNode, type NodeStatus } from '../lib/graph';
-import { changedAdjustments } from '../lib/adjust';
+import { changedAdjustments, drawAdjusted, prepareAdjust, type AdjustValues } from '../lib/adjust';
+import { subscribeLive } from '../livePreview';
 import { changedSettings } from '../lib/presets';
 import { Icon } from './Icons';
 import { MenuButton, type MenuItem } from './Menu';
+
+// While an Adjust slider moves, draws each value on the GPU into a canvas over the card's image, outside React.
+// After the drag, the canvas stays until the card shows the regular preview for the final values (`current`).
+function LiveCanvas({ edgeId, input, current }: { edgeId: string; input?: Blob; current: boolean }) {
+  const canvas = useRef<HTMLCanvasElement>(null), inputRef = useRef(input), currentRef = useRef(current), ending = useRef(false);
+  inputRef.current = input;
+  currentRef.current = current;
+  // Hides the canvas once the image under it is the final preview and has loaded.
+  const handOver = useRef(() => {
+    const target = canvas.current, image = target?.previousElementSibling;
+    if (!target || !ending.current || !currentRef.current || !(image instanceof HTMLImageElement)) return;
+    if (image.complete) { target.hidden = true; ending.current = false; }
+    else image.addEventListener('load', handOver.current, { once: true });
+  });
+  useEffect(() => { handOver.current(); });
+  useEffect(() => {
+    let latest: AdjustValues | undefined;
+    const draw = () => {
+      const target = canvas.current, blob = inputRef.current;
+      if (!target || !blob || !latest) return;
+      if (drawAdjusted(target, blob, latest)) { target.hidden = false; ending.current = false; }
+      else prepareAdjust(blob).then(draw, () => {});
+    };
+    return subscribeLive(edgeId, values => {
+      latest = values;
+      if (values) draw();
+      else { ending.current = true; handOver.current(); }
+    });
+  }, [edgeId]);
+  return <canvas ref={canvas} className="live-canvas" hidden />;
+}
 
 // What an output card shows before it has an image.
 function emptyText(status: NodeStatus, blockerName: string | undefined) {
@@ -47,7 +79,12 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
       <div className="preview" onDoubleClick={() => asset && actions.openViewer(id)} title={asset ? 'Double-click to view larger' : undefined}>
         {asset && data.kind === 'original' && <img src={asset.url} alt={data.name} draggable={false} />}
         {asset && data.kind !== 'original' && <>
-          <img src={asset.url} alt={data.name} draggable={false} className={status.stale ? 'stale' : undefined} />
+          {edge?.data.kind === 'adjust'
+            ? <div className="live-frame">
+                <img src={asset.url} alt={data.name} draggable={false} className={status.stale ? 'stale' : undefined} />
+                <LiveCanvas edgeId={edge.id} input={status.adjusts ? assets.get(status.adjusts)?.blob : undefined} current={asset.id === status.assetId} />
+              </div>
+            : <img src={asset.url} alt={data.name} draggable={false} className={status.stale ? 'stale' : undefined} />}
           {(status.pending || status.stale || status.error) && <div className="preview-status">
             <span className={`status-pill${status.error && !status.pending ? ' failed' : ''}`} title={status.error}>
               {status.pending ? <><span className="spinner" />Generating…</> : status.stale ? 'Out of date' : 'Run failed'}
