@@ -17,7 +17,7 @@ export function StepEdgeView({ id, target, sourceX, sourceY, targetX, targetY, s
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           title={data.kind === 'prompt' ? data.prompt || 'Write a prompt in the inspector' : 'Open style settings'}
           onClick={event => { event.stopPropagation(); actions.selectEdge(id); }}>
-          {status?.pending ? <span className="spinner" /> : <Icon name={data.kind === 'prompt' ? 'prompt' : 'style'} size={13} />}
+          <Icon name={data.kind === 'prompt' ? 'prompt' : 'style'} size={13} />
           <span>{stepLabel(data)}</span>
         </button>
       </EdgeLabelRenderer>

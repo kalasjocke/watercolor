@@ -9,7 +9,6 @@ import { MenuButton, type MenuItem } from './Menu';
 // What an output card shows before it has an image.
 function emptyText(status: NodeStatus, blockerName: string | undefined) {
   if (!status.hasInput) return 'Connect an input';
-  if (status.pending) return 'Making a draft…';
   if (status.error) return `Run failed: ${status.error}`;
   if (status.assetId) return 'Image unavailable';
   if (status.blockedBy) return `Run ${blockerName ?? 'the step before'} first`;
@@ -56,11 +55,13 @@ export function ImageNodeView({ id, data, selected }: NodeProps<ImageNode>) {
         </>}
         {!asset && (data.kind === 'original'
           ? <div className="placeholder">Image unavailable</div>
-          : <div className={`placeholder${status.error && !status.pending ? ' failed' : ''}`}>
-              {status.pending ? <span className="spinner large" /> : <Icon name={status.hasInput ? 'style' : 'link'} size={20} />}
-              <span className="placeholder-text" title={emptyText(status, blockerName)}>{emptyText(status, blockerName)}</span>
-              {!status.pending && runButton(status.error ? 'Retry' : 'Run')}
-            </div>)}
+          : status.pending
+            ? <div className="placeholder"><span className="status-pill"><span className="spinner" />Generating…</span></div>
+            : <div className={`placeholder${status.error ? ' failed' : ''}`}>
+                <Icon name={status.hasInput ? 'style' : 'link'} size={20} />
+                <span className="placeholder-text" title={emptyText(status, blockerName)}>{emptyText(status, blockerName)}</span>
+                {runButton(status.error ? 'Retry' : 'Run')}
+              </div>)}
       </div>
       <div className="card-body">
         <div className="card-title-row">
